@@ -50,6 +50,48 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {str(e)}")
     raise
 
+def handle_api_request(url, params, api_name):
+    """
+    Handle API requests with proper error handling and logging.
+
+    Args:
+        url (str): API endpoint URL
+        params (dict): Parameters for the API request
+        api_name (str): Name of the API for logging purposes
+
+    Returns:
+        tuple: (success, data) where success is a boolean and data is the JSON response or error message
+    """
+    try:
+        logger.info(f"Making {api_name} API request to {url}")
+        response = requests.get(url, params=params, timeout=10)
+
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"Successful {api_name} API response")
+            return True, data
+        else:
+            error_msg = f"{api_name} API returned status code {response.status_code}"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+    except requests.exceptions.Timeout:
+        error_msg = f"{api_name} API request timed out"
+        logger.error(error_msg)
+        return False, f"Error: {error_msg}"
+    except requests.exceptions.ConnectionError:
+        error_msg = f"Connection error when accessing {api_name} API"
+        logger.error(error_msg)
+        return False, f"Error: {error_msg}"
+    except json.JSONDecodeError:
+        error_msg = f"Invalid JSON response from {api_name} API"
+        logger.error(error_msg)
+        return False, f"Error: {error_msg}"
+    except Exception as e:
+        error_msg = f"Unexpected error in {api_name} API request: {str(e)}"
+        logger.error(error_msg)
+        return False, f"Error: {error_msg}"
+
 def get_future_weather_data(location, date):
     base_url = "https://my.meteoblue.com/packages/basic-1h"
     params = {
@@ -61,32 +103,32 @@ def get_future_weather_data(location, date):
         "tz": "UTC"
     }
 
-    response = requests.get(base_url, params=params)
-    if response.status_code == 200:
-        data = response.json()
+    success, response_data = handle_api_request(base_url, params, "Meteoblue")
 
-        if "data_1h" not in data:
-            return "Sorry, I couldn't retrieve detailed weather information at this time."
+    if not success:
+        return f"Sorry, I couldn't retrieve the weather information at this time. {response_data}"
 
-        forecast = data["data_1h"]
+    if "data_1h" not in response_data:
+        logger.warning("Missing data_1h in Meteoblue API response")
+        return "Sorry, I couldn't retrieve detailed weather information at this time."
 
-        date_index = (date - datetime.now().date()).days
-        if 0 <= date_index <= 6:
-            # Get the average values for the day
-            temp = sum(forecast.get("temperature", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-            wind_speed = sum(forecast.get("windspeed", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-            wind_direction = sum(forecast.get("winddirection", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-            precip = sum(forecast.get("precipitation", [0] * 24)[date_index*24:(date_index+1)*24])
-            snow = sum(forecast.get("snowfall", [0] * 24)[date_index*24:(date_index+1)*24])
-            relative_humidity = sum(forecast.get("relativehumidity", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-            pressure = sum(forecast.get("pressure", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-            cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+    forecast = response_data["data_1h"]
 
-            return format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure, cloud_cover)
-        else:
-            return "Sorry, I can only provide weather information for today and the next 6 days."
+    date_index = (date - datetime.now().date()).days
+    if 0 <= date_index <= 6:
+        # Get the average values for the day
+        temp = sum(forecast.get("temperature", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+        wind_speed = sum(forecast.get("windspeed", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+        wind_direction = sum(forecast.get("winddirection", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+        precip = sum(forecast.get("precipitation", [0] * 24)[date_index*24:(date_index+1)*24])
+        snow = sum(forecast.get("snowfall", [0] * 24)[date_index*24:(date_index+1)*24])
+        relative_humidity = sum(forecast.get("relativehumidity", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+        pressure = sum(forecast.get("pressure", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+        cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+
+        return format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure, cloud_cover)
     else:
-        return "Sorry, I couldn't retrieve the weather information at this time."
+        return "Sorry, I can only provide weather information for today and the next 6 days."
 
 def get_historical_weather_data(location, date):
     base_url = (f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{location['lat']},"
@@ -97,10 +139,13 @@ def get_historical_weather_data(location, date):
         "contentType": "json",
     }
 
-    response = requests.get(base_url, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        day_data = data['days'][0]
+    success, response_data = handle_api_request(base_url, params, "VisualCrossing")
+
+    if not success:
+        return f"Sorry, I couldn't retrieve the historical weather information at this time. {response_data}"
+
+    try:
+        day_data = response_data['days'][0]
 
         temp = day_data['temp']
         wind_speed = day_data['windspeed']
@@ -112,8 +157,10 @@ def get_historical_weather_data(location, date):
         cloud_cover = day_data['cloudcover']
 
         return format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure, cloud_cover, is_historical=True)
-    else:
-        return "Sorry, I couldn't retrieve the historical weather information at this time."
+    except (KeyError, IndexError) as e:
+        error_msg = f"Missing data in VisualCrossing API response: {str(e)}"
+        logger.error(error_msg)
+        return "Sorry, I couldn't parse the historical weather information at this time."
 
 def format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure,
                         cloud_cover, is_historical=False):
@@ -176,17 +223,22 @@ def get_location_coordinates(location_name):
         "limit": 1
     }
 
-    response = requests.get(base_url, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        if data["results"]:
-            result = data["results"][0]
-            return {
-                "lat": result["geometry"]["lat"],
-                "lon": result["geometry"]["lng"],
-                "name": result["formatted"]
-            }
-    return None
+    success, response_data = handle_api_request(base_url, params, "OpenCage")
+
+    if not success:
+        logger.error(f"Failed to get coordinates for location: {location_name}")
+        return None
+
+    if "results" in response_data and response_data["results"]:
+        result = response_data["results"][0]
+        return {
+            "lat": result["geometry"]["lat"],
+            "lon": result["geometry"]["lng"],
+            "name": result["formatted"]
+        }
+    else:
+        logger.warning(f"No results found for location: {location_name}")
+        return None
 
 def parse_date(date_string):
     # Handle day names first
@@ -242,7 +294,7 @@ def get_optimal_flying_day(location):
     days_data = []
     today = datetime.now().date()
 
-    print(f"Analysing weather for {location} over the next 6 days...")
+    logger.info(f"Analysing weather for {location} over the next 6 days...")
 
     # Loop through the next 6 days to collect weather data
     for day_offset in range(7):  # 0 = today, 1-6 = next six days
@@ -259,15 +311,17 @@ def get_optimal_flying_day(location):
             "tz": "UTC"
         }
 
-        response = requests.get(base_url, params=params)
-        if response.status_code != 200:
+        success, response_data = handle_api_request(base_url, params, "Meteoblue (flying day)")
+
+        if not success:
+            logger.warning(f"Failed to get weather data for day {day_offset} ({forecast_date})")
             continue
 
-        data = response.json()
-        if "data_1h" not in data:
+        if "data_1h" not in response_data:
+            logger.warning(f"Missing data_1h in Meteoblue API response for day {day_offset}")
             continue
 
-        forecast = data["data_1h"]
+        forecast = response_data["data_1h"]
 
         # Extract relevant data for the day
         try:
@@ -308,10 +362,10 @@ def get_optimal_flying_day(location):
                 "day_name": forecast_date.strftime('%A')
             })
 
-            print(f"Collected data for {forecast_date.strftime('%A, %Y-%m-%d')}")
+            logger.info(f"Collected data for {forecast_date.strftime('%A, %Y-%m-%d')}")
 
         except Exception as e:
-            print(f"Error processing data for day {day_offset}: {str(e)}")
+            logger.error(f"Error processing data for day {day_offset}: {str(e)}")
 
     if not days_data:
         return "I couldn't retrieve enough weather data to make a recommendation."
@@ -611,27 +665,33 @@ def handle_flying_day_request(query):
         }
     ]
 
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "You analyse queries to determine locations for finding optimal flying days."},
-            {"role": "user", "content": query}
-        ],
-        functions=functions,
-        function_call="auto"
-    )
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You analyse queries to determine locations for finding optimal flying days."},
+                {"role": "user", "content": query}
+            ],
+            functions=functions,
+            function_call="auto"
+        )
 
-    message = response.choices[0].message
+        message = response.choices[0].message
 
-    if message.function_call:
-        function_args = json.loads(message.function_call.arguments)
-        location = function_args.get("location", "Berlin")
+        if message.function_call:
+            function_args = json.loads(message.function_call.arguments)
+            location = function_args.get("location", "Berlin")
+            logger.info(f"Extracted location from query: {location}")
 
-        # Get and format the optimal flying day information
-        flying_data = get_optimal_flying_day(location)
-        return format_optimal_flying_day_response(flying_data)
-    else:
-        return "I need a location to check for optimal flying conditions. Please specify a city or area."
+            # Get and format the optimal flying day information
+            flying_data = get_optimal_flying_day(location)
+            return format_optimal_flying_day_response(flying_data)
+        else:
+            logger.warning("No function call in OpenAI response")
+            return "I need a location to check for optimal flying conditions. Please specify a city or area."
+    except Exception as e:
+        logger.error(f"Error in handling flying day request: {str(e)}")
+        return "I'm sorry, I encountered an error while processing your request. Please try again."
 
 def handle_conversation(query):
     functions = [
@@ -655,53 +715,65 @@ def handle_conversation(query):
         }
     ]
 
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant that can engage in general conversation and "
-                                          "provide weather information when asked. You can provide historical weather "
-                                          "data for past dates, current weather, and forecasts for up to 6 days in the "
-                                          "future. If the user doesn't specify a location or date for weather, assume "
-                                          "they're asking about Berlin for today."},
-            {"role": "user", "content": query}
-        ],
-        functions=functions,
-        function_call="auto"
-    )
+    try:
+        logger.info(f"Processing query: {query}")
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that can engage in general conversation and "
+                                              "provide weather information when asked. You can provide historical weather "
+                                              "data for past dates, current weather, and forecasts for up to 6 days in the "
+                                              "future. If the user doesn't specify a location or date for weather, assume "
+                                              "they're asking about Berlin for today."},
+                {"role": "user", "content": query}
+            ],
+            functions=functions,
+            function_call="auto"
+        )
 
-    message = response.choices[0].message
+        message = response.choices[0].message
 
-    if message.function_call:
-        function_name = message.function_call.name
-        function_args = json.loads(message.function_call.arguments)
+        if message.function_call:
+            function_name = message.function_call.name
+            function_args = json.loads(message.function_call.arguments)
+            logger.info(f"Function call: {function_name} with args: {function_args}")
 
-        if function_name == "get_weather":
-            location = function_args.get("location", "Berlin")
-            date_string = function_args.get("date", "today")
+            if function_name == "get_weather":
+                location = function_args.get("location", "Berlin")
+                date_string = function_args.get("date", "today")
 
-            try:
-                date = parse_date(date_string)
-                today = datetime.now().date()
+                try:
+                    date = parse_date(date_string)
+                    today = datetime.now().date()
 
-                if (date - today).days > 6:
-                    return (f"I'm sorry, but I can only provide weather for the past, today and up to 6 days "
-                            f"in the future. The date you asked about ({date.strftime('%Y-%m-%d')}) is too far "
-                            f"in the future. The latest date I can provide a forecast for is "
-                            f"{(today + timedelta(days=6)).strftime('%Y-%m-%d')}. Would you like to know the "
-                            f"weather for {location} on that date instead?")
+                    if (date - today).days > 6:
+                        logger.warning(f"Date out of range: {date}")
+                        return (f"I'm sorry, but I can only provide weather for the past, today and up to 6 days "
+                                f"in the future. The date you asked about ({date.strftime('%Y-%m-%d')}) is too far "
+                                f"in the future. The latest date I can provide a forecast for is "
+                                f"{(today + timedelta(days=6)).strftime('%Y-%m-%d')}. Would you like to know the "
+                                f"weather for {location} on that date instead?")
 
-                weather_info = get_weather(location, date)
+                    weather_info = get_weather(location, date)
+                    return weather_info
 
-                return weather_info
-            except ValueError as e:
-                return f"I am happy to tell you the weather, if you give me a date and location. And I'm sorry, I couldn't understand this date. {str(e)}"
+                except ValueError as e:
+                    logger.error(f"Date parsing error: {str(e)}")
+                    return f"I am happy to tell you the weather, if you give me a date and location. And I'm sorry, I couldn't understand this date. {str(e)}"
+            else:
+                logger.warning(f"Unknown function call: {function_name}")
+                return "I'm sorry, I don't know how to handle that request."
         else:
-            return "I'm sorry, I don't know how to handle that request."
-    else:
-        # If no function was called, it means the query wasn't about weather
-        return message.content
+            # If no function was called, it means the query wasn't about weather
+            logger.info("No function call - regular conversation")
+            return message.content
+
+    except Exception as e:
+        logger.error(f"Error handling conversation: {str(e)}")
+        return "I'm sorry, I encountered an error while processing your request. Please try again."
 
 def main():
+    logger.info("Starting Weather Chatbot with flight weather analyser")
     print("Welcome to our Weather Chatbot with flight weather analyser initialised by Sasha & Fabian & Fabio.")
     print("You can ask about the weather for any location in the world, for past dates, today, and up to 6 days in the future.")
     print("You can also ask for the appropriate day for flying in any location!")
@@ -714,6 +786,7 @@ def main():
     while True:
         user_input = input("\nYou: ").strip()
         if user_input.lower() == 'exit':
+            logger.info("User exited the application")
             print("Goodbye!")
             break
 
@@ -721,10 +794,12 @@ def main():
             # Check if we're in flying mode waiting for a location
             if flying_mode and not any(keyword in user_input.lower() for keyword in flying_keywords):
                 # User is providing just a location after being asked
+                logger.info(f"Processing location for flying day: {user_input}")
                 response = handle_flying_day_request(f"What is the best day to fly in {user_input}?")
                 flying_mode = False
             # Check if this is a new flying day request
             elif any(keyword in user_input.lower() for keyword in flying_keywords):
+                logger.info("Detected flying day request")
                 # Check if location is specified
                 location_specified = False
                 # Use a check for common prepositions that might indicate a location
@@ -735,6 +810,7 @@ def main():
                         break
 
                 if not location_specified:
+                    logger.info("No location specified for flying day request")
                     print(f"Chatbot: I need a location to check for optimal flying conditions. Please specify a city or area.")
                     flying_mode = True
                     continue
@@ -742,11 +818,13 @@ def main():
                     response = handle_flying_day_request(user_input)
                     flying_mode = False
             else:
+                logger.info("Processing general conversation query")
                 response = handle_conversation(user_input)
                 flying_mode = False
 
             print(f"Chatbot: {response}")
         except Exception as e:
+            logger.error(f"Error in main loop: {str(e)}")
             print(f"Chatbot: I'm sorry, I encountered an error: {str(e)}")
             flying_mode = False
 
