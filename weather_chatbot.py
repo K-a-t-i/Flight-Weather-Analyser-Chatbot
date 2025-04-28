@@ -92,6 +92,49 @@ def handle_api_request(url, params, api_name):
         logger.error(error_msg)
         return False, f"Error: {error_msg}"
 
+def calculate_daily_averages(forecast, day_start_idx, day_end_idx):
+    """
+    Calculate daily averages from hourly forecast data.
+
+    Args:
+        forecast (dict): Forecast data containing hourly measurements
+        day_start_idx (int): Start index for the day's data
+        day_end_idx (int): End index for the day's data
+
+    Returns:
+        dict: Daily averages for various weather parameters
+    """
+    # Calculate daily averages and totals from hourly data
+    temp = sum(forecast.get("temperature", [0] * 24)[day_start_idx:day_end_idx]) / 24
+    wind_speed = sum(forecast.get("windspeed", [0] * 24)[day_start_idx:day_end_idx]) / 24
+    wind_direction = sum(forecast.get("winddirection", [0] * 24)[day_start_idx:day_end_idx]) / 24
+    precip = sum(forecast.get("precipitation", [0] * 24)[day_start_idx:day_end_idx])
+    snow = sum(forecast.get("snowfall", [0] * 24)[day_start_idx:day_end_idx])
+    relative_humidity = sum(forecast.get("relativehumidity", [0] * 24)[day_start_idx:day_end_idx]) / 24
+
+    # Handle pressure data
+    pressure_values = forecast.get("pressure", [0] * 24)[day_start_idx:day_end_idx]
+    if all(p == 0 for p in pressure_values):
+        # Use a default standard pressure if data is missing
+        pressure = 1013  # Standard atmospheric pressure in hPa
+    else:
+        # Filter out zero values before calculating average
+        valid_pressure = [p for p in pressure_values if p > 0]
+        pressure = sum(valid_pressure) / len(valid_pressure) if valid_pressure else 1013
+
+    cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[day_start_idx:day_end_idx]) / 24
+
+    return {
+        "temp": temp,
+        "wind_speed": wind_speed,
+        "wind_direction": wind_direction,
+        "precipitation": precip,
+        "snow": snow,
+        "relative_humidity": relative_humidity,
+        "pressure": pressure,
+        "cloud_cover": cloud_cover
+    }
+
 def get_future_weather_data(location, date):
     base_url = "https://my.meteoblue.com/packages/basic-1h"
     params = {
@@ -116,17 +159,24 @@ def get_future_weather_data(location, date):
 
     date_index = (date - datetime.now().date()).days
     if 0 <= date_index <= 6:
-        # Get the average values for the day
-        temp = sum(forecast.get("temperature", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-        wind_speed = sum(forecast.get("windspeed", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-        wind_direction = sum(forecast.get("winddirection", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-        precip = sum(forecast.get("precipitation", [0] * 24)[date_index*24:(date_index+1)*24])
-        snow = sum(forecast.get("snowfall", [0] * 24)[date_index*24:(date_index+1)*24])
-        relative_humidity = sum(forecast.get("relativehumidity", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-        pressure = sum(forecast.get("pressure", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
-        cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[date_index*24:(date_index+1)*24]) / 24
+        day_start_idx = date_index * 24
+        day_end_idx = (date_index + 1) * 24
 
-        return format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure, cloud_cover)
+        # Get daily averages
+        weather_data = calculate_daily_averages(forecast, day_start_idx, day_end_idx)
+
+        return format_weather_info(
+            location,
+            date,
+            weather_data["temp"],
+            weather_data["wind_speed"],
+            weather_data["wind_direction"],
+            weather_data["precipitation"],
+            weather_data["snow"],
+            weather_data["relative_humidity"],
+            weather_data["pressure"],
+            weather_data["cloud_cover"]
+        )
     else:
         return "Sorry, I can only provide weather information for today and the next 6 days."
 
@@ -328,37 +378,20 @@ def get_optimal_flying_day(location):
             day_start_idx = day_offset * 24
             day_end_idx = (day_offset + 1) * 24
 
-            # Calculate daily averages and totals from hourly data
-            temp = sum(forecast.get("temperature", [0] * 24)[day_start_idx:day_end_idx]) / 24
-            wind_speed = sum(forecast.get("windspeed", [0] * 24)[day_start_idx:day_end_idx]) / 24
-            wind_direction = sum(forecast.get("winddirection", [0] * 24)[day_start_idx:day_end_idx]) / 24
-            precip = sum(forecast.get("precipitation", [0] * 24)[day_start_idx:day_end_idx])
-            snow = sum(forecast.get("snowfall", [0] * 24)[day_start_idx:day_end_idx])
-            relative_humidity = sum(forecast.get("relativehumidity", [0] * 24)[day_start_idx:day_end_idx]) / 24
-
-            # Handle pressure data
-            pressure_values = forecast.get("pressure", [0] * 24)[day_start_idx:day_end_idx]
-            if all(p == 0 for p in pressure_values):
-                # Use a default standard pressure if data is missing
-                pressure = 1013  # Standard atmospheric pressure in hPa
-            else:
-                # Filter out zero values before calculating average
-                valid_pressure = [p for p in pressure_values if p > 0]
-                pressure = sum(valid_pressure) / len(valid_pressure) if valid_pressure else 1013
-
-            cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[day_start_idx:day_end_idx]) / 24
+            # Get daily averages
+            weather_data = calculate_daily_averages(forecast, day_start_idx, day_end_idx)
 
             # Store the data in an array
             days_data.append({
                 "date": forecast_date,
-                "temp": temp,
-                "wind_speed": wind_speed,
-                "wind_direction": wind_direction,
-                "precipitation": precip,
-                "snow": snow,
-                "humidity": relative_humidity,
-                "pressure": pressure,
-                "cloud_cover": cloud_cover,
+                "temp": weather_data["temp"],
+                "wind_speed": weather_data["wind_speed"],
+                "wind_direction": weather_data["wind_direction"],
+                "precipitation": weather_data["precipitation"],
+                "snow": weather_data["snow"],
+                "humidity": weather_data["relative_humidity"],
+                "pressure": weather_data["pressure"],
+                "cloud_cover": weather_data["cloud_cover"],
                 "day_name": forecast_date.strftime('%A')
             })
 
