@@ -1,22 +1,54 @@
 import os
 import requests
 import json
+import logging
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 import dateparser
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # Load environment variables
 load_dotenv()
 
-# Set up API keys
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") # chatbot
-METEOBLUE_API_KEY = os.getenv("METEOBLUE_API_KEY") # future_weather_data
-OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY") # location_coordinates
-VISUALCROSSING_API_KEY = os.getenv("VISUALCROSSING_API_KEY") # historical_weather_data 
+def get_env_variable(var_name, default=None, required=False):
+    """
+    Get an environment variable with optional default value and requirement check.
 
-# Initialise OpenAI API
-client = OpenAI(api_key=OPENAI_API_KEY)
+    Args:
+        var_name (str): Name of the environment variable
+        default (any, optional): Default value if variable is not found
+        required (bool): Whether the variable is required
+
+    Returns:
+        The environment variable value or default
+
+    Raises:
+        ValueError: If the variable is required but not found
+    """
+    value = os.getenv(var_name, default)
+    if value is None and required:
+        error_msg = f"Required environment variable {var_name} not set"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    return value
+
+# Set up API keys with validation
+OPENAI_API_KEY = get_env_variable("OPENAI_API_KEY", required=True)  # chatbot
+METEOBLUE_API_KEY = get_env_variable("METEOBLUE_API_KEY", required=True)  # future_weather_data
+OPENCAGE_API_KEY = get_env_variable("OPENCAGE_API_KEY", required=True)  # location_coordinates
+VISUALCROSSING_API_KEY = get_env_variable("VISUALCROSSING_API_KEY", required=True)  # historical_weather_data
+
+try:
+    # Initialise OpenAI API
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    logger.info("Successfully initialized OpenAI client")
+except Exception as e:
+    logger.error(f"Failed to initialize OpenAI client: {str(e)}")
+    raise
 
 def get_future_weather_data(location, date):
     base_url = "https://my.meteoblue.com/packages/basic-1h"
