@@ -371,6 +371,36 @@ def get_historical_weather_data(location, date):
 
 def format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure,
                         cloud_cover, is_historical=False):
+    # Track which values are defaults
+    is_default = {
+        "temp": temp is None or temp == 0,
+        "wind_speed": wind_speed is None or wind_speed == 0,
+        "wind_direction": wind_direction is None or wind_direction == 0,
+        "precip": precip is None or precip == 0,  # Note: 0 is valid for precip, but we'll consider it default for consistency
+        "snow": snow is None or snow == 0,  # Note: 0 is valid for snow, but we'll consider it default for consistency
+        "relative_humidity": relative_humidity is None or relative_humidity == 0,
+        "pressure": pressure is None or pressure == 0 or pressure == 1013,  # 1013 is our default value
+        "cloud_cover": cloud_cover is None or cloud_cover == 0,  # Note: 0 is valid for cloud cover
+    }
+
+    # Set default values for missing data
+    if is_default["temp"]:
+        temp = 15.0  # Default comfortable temperature
+    if is_default["wind_speed"]:
+        wind_speed = 0.0  # Default calm wind
+    if is_default["wind_direction"]:
+        wind_direction = 0.0  # Default north
+    if is_default["precip"]:
+        precip = 0.0  # Default no precipitation
+    if is_default["snow"]:
+        snow = 0.0  # Default no snow
+    if is_default["relative_humidity"]:
+        relative_humidity = 50.0  # Default moderate humidity
+    if is_default["pressure"]:
+        pressure = 1013.0  # Default standard pressure
+    if is_default["cloud_cover"]:
+        cloud_cover = 0.0  # Default clear skies
+
     # Convert wind speed to knots (1 km/h ≈ 0.54 knots)
     wind_speed_knots = wind_speed * 0.54
 
@@ -398,24 +428,30 @@ def format_weather_info(location, date, temp, wind_speed, wind_direction, precip
 
     verb = "was" if is_historical else "is expected to be"
 
+    # Helper function to format value with default indicator
+    def format_value(value, is_default_value, format_str):
+        formatted = format_str.format(value)
+        indicator = "(default value)" if is_default_value else "(current value)"
+        return f"{formatted} {indicator}"
+
     # Formatting the output
     weather_info = f"""On {date.strftime('%Y-%m-%d')}, the weather in {location['name']} {verb} {condition}. 
-    The average temperature {verb} {temp:.2f}°C, with {precip:.1f}mm of precipitation and average wind speeds 
-    of {wind_speed:.2f}km/h.
+    The average temperature {verb} {format_value(temp, is_default["temp"], "{:.2f}°C")}, with {format_value(precip, is_default["precip"], "{:.1f}mm")} of precipitation and average wind speeds 
+    of {format_value(wind_speed, is_default["wind_speed"], "{:.2f}km/h")}.
 
-- Average Temperature: {temp:.2f}°C
-- Average Wind Speed: {wind_speed:.2f} km/h
-- Total Precipitation: {precip:.1f} mm
-- Average Relative Humidity: {relative_humidity:.0f}%
-- Average Cloud Cover: {cloud_cover:.0f}%
+- Average Temperature: {format_value(temp, is_default["temp"], "{:.2f}°C")}
+- Average Wind Speed: {format_value(wind_speed, is_default["wind_speed"], "{:.2f} km/h")}
+- Total Precipitation: {format_value(precip, is_default["precip"], "{:.1f} mm")}
+- Average Relative Humidity: {format_value(relative_humidity, is_default["relative_humidity"], "{:.0f}%")}
+- Average Cloud Cover: {format_value(cloud_cover, is_default["cloud_cover"], "{:.0f}%")}
 
 Weather information for our pilots:
-- Average Temperature: {temp:.2f}°C
-- Wind: {wind_speed:.2f} km/h ({wind_speed_knots:.1f} knots) from {wind_direction:.0f}° (DD)
-- Precipitation (RA): {precip:.1f} mm
-- Snow (SN): {snow:.1f} mm
-- Average Relative Humidity (RH): {relative_humidity:.0f}%
-- Average Barometric Pressure (QNH): {pressure:.0f} hPa
+- Average Temperature: {format_value(temp, is_default["temp"], "{:.2f}°C")}
+- Wind: {format_value(wind_speed, is_default["wind_speed"], "{:.2f} km/h")} ({format_value(wind_speed_knots, is_default["wind_speed"], "{:.1f} knots")}) from {format_value(wind_direction, is_default["wind_direction"], "{:.0f}°")} (DD)
+- Precipitation (RA): {format_value(precip, is_default["precip"], "{:.1f} mm")}
+- Snow (SN): {format_value(snow, is_default["snow"], "{:.1f} mm")}
+- Average Relative Humidity (RH): {format_value(relative_humidity, is_default["relative_humidity"], "{:.0f}%")}
+- Average Barometric Pressure (QNH): {format_value(pressure, is_default["pressure"], "{:.0f} hPa")}
 - {fog_or_mist}
 - Freezing Level (FZ LVL): Information not available
 - Ceiling Height (CIG): Information not available"""
@@ -518,7 +554,7 @@ def get_optimal_flying_day(location):
             "tz": "UTC"
         }
 
-        success, response_data = handle_api_request(base_url, params, "Meteoblue (flying day)")
+        success, response_data = handle_api_request(base_url, params, "Meteoblue (flying day)", cache_type="weather")
 
         if not success:
             logger.warning(f"Failed to get weather data for day {day_offset} ({forecast_date})")
@@ -782,14 +818,32 @@ def format_optimal_flying_day_response(flying_data):
         response += f"The best day for flying in the next week is **{best_day['day_name']}, {best_day['date']}** "
         response += f"with a flying condition score of {best_score} (base:100 - {abs(best_net)} penalty).\n\n"
 
+    # Helper function to format value with default indicator
+    def format_value(value, property_name, format_str):
+        # Check if the value is a default value
+        is_default = False
+
+        # Check common default values based on property
+        if property_name == "pressure" and value == 1013:
+            is_default = True
+        elif (property_name in ["precipitation", "snow", "cloud_cover"] and value == 0):
+            # These could be actual zeros or defaults
+            is_default = False  # We'll assume actual for these
+        elif value == 0:
+            is_default = True
+
+        formatted = format_str.format(value)
+        indicator = "(default value)" if is_default else "(current value)"
+        return f"{formatted} {indicator}"
+
     response += "**Weather conditions:**\n"
     weather = best_day["weather"]
-    response += f"- Temperature: {weather['temp']:.1f}°C\n"
-    response += f"- Wind: {weather['wind_speed']:.1f} km/h from {weather['wind_direction']:.0f}°\n"
-    response += f"- Precipitation: {weather['precipitation']:.1f} mm\n"
-    response += f"- Cloud cover: {weather['cloud_cover']:.0f}%\n"
-    response += f"- Humidity: {weather['humidity']:.0f}%\n"
-    response += f"- Pressure: {weather['pressure']:.0f} hPa\n\n"
+    response += f"- Temperature: {format_value(weather['temp'], 'temp', '{:.1f}°C')}\n"
+    response += f"- Wind: {format_value(weather['wind_speed'], 'wind_speed', '{:.1f} km/h')} from {format_value(weather['wind_direction'], 'wind_direction', '{:.0f}°')}\n"
+    response += f"- Precipitation: {format_value(weather['precipitation'], 'precipitation', '{:.1f} mm')}\n"
+    response += f"- Cloud cover: {format_value(weather['cloud_cover'], 'cloud_cover', '{:.0f}%')}\n"
+    response += f"- Humidity: {format_value(weather['humidity'], 'humidity', '{:.0f}%')}\n"
+    response += f"- Pressure: {format_value(weather['pressure'], 'pressure', '{:.0f} hPa')}\n\n"
 
     response += "**Analysis factors:**\n"
     for factor, description in best_day["factors"].items():
