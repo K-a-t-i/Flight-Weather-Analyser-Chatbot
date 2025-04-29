@@ -371,35 +371,47 @@ def get_historical_weather_data(location, date):
 
 def format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure,
                         cloud_cover, is_historical=False):
-    # Track which values are defaults
+    # Define default values
+    default_values = {
+        "temp": 15.0,         # Default comfortable temperature
+        "wind_speed": 0.0,     # Default calm wind
+        "wind_direction": 0.0, # Default north
+        "precip": 0.0,         # Default no precipitation
+        "snow": 0.0,           # Default no snow
+        "relative_humidity": 50.0,  # Default moderate humidity
+        "pressure": 1013.0,    # Default standard pressure
+        "cloud_cover": 0.0,    # Default clear skies
+    }
+
+    # Better detection of missing or default data
     is_default = {
-        "temp": temp is None or temp == 0,
-        "wind_speed": wind_speed is None or wind_speed == 0,
-        "wind_direction": wind_direction is None or wind_direction == 0,
-        "precip": precip is None or precip == 0,  # Note: 0 is valid for precip, but we'll consider it default for consistency
-        "snow": snow is None or snow == 0,  # Note: 0 is valid for snow, but we'll consider it default for consistency
-        "relative_humidity": relative_humidity is None or relative_humidity == 0,
-        "pressure": pressure is None or pressure == 0 or pressure == 1013,  # 1013 is our default value
-        "cloud_cover": cloud_cover is None or cloud_cover == 0,  # Note: 0 is valid for cloud cover
+        "temp": temp is None or abs(temp) < 0.01,  # Allowing for floating point imprecision
+        "wind_speed": wind_speed is None or wind_speed < 0.01,
+        "wind_direction": wind_direction is None,
+        "precip": precip is None,  # Now only None is considered default, 0 is a valid measurement
+        "snow": snow is None,      # Now only None is considered default, 0 is a valid measurement
+        "relative_humidity": relative_humidity is None or relative_humidity < 0.01,
+        "pressure": pressure is None or abs(pressure - 1013.0) < 0.01,  # Close to standard pressure
+        "cloud_cover": cloud_cover is None,  # Now only None is considered default, 0 is a valid measurement
     }
 
     # Set default values for missing data
     if is_default["temp"]:
-        temp = 15.0  # Default comfortable temperature
+        temp = default_values["temp"]
     if is_default["wind_speed"]:
-        wind_speed = 0.0  # Default calm wind
+        wind_speed = default_values["wind_speed"]
     if is_default["wind_direction"]:
-        wind_direction = 0.0  # Default north
+        wind_direction = default_values["wind_direction"]
     if is_default["precip"]:
-        precip = 0.0  # Default no precipitation
+        precip = default_values["precip"]
     if is_default["snow"]:
-        snow = 0.0  # Default no snow
+        snow = default_values["snow"]
     if is_default["relative_humidity"]:
-        relative_humidity = 50.0  # Default moderate humidity
+        relative_humidity = default_values["relative_humidity"]
     if is_default["pressure"]:
-        pressure = 1013.0  # Default standard pressure
+        pressure = default_values["pressure"]
     if is_default["cloud_cover"]:
-        cloud_cover = 0.0  # Default clear skies
+        cloud_cover = default_values["cloud_cover"]
 
     # Convert wind speed to knots (1 km/h ≈ 0.54 knots)
     wind_speed_knots = wind_speed * 0.54
@@ -823,14 +835,27 @@ def format_optimal_flying_day_response(flying_data):
         # Check if the value is a default value
         is_default = False
 
+        # Define default values for comparison
+        default_values = {
+            "temp": 15.0,
+            "wind_speed": 0.0,
+            "wind_direction": 0.0,
+            "precipitation": None,  # 0 is valid measurement
+            "snow": None,  # 0 is valid measurement
+            "humidity": 50.0,
+            "pressure": 1013.0,
+            "cloud_cover": None,  # 0 is valid measurement
+        }
+
         # Check common default values based on property
-        if property_name == "pressure" and value == 1013:
-            is_default = True
-        elif (property_name in ["precipitation", "snow", "cloud_cover"] and value == 0):
-            # These could be actual zeros or defaults
-            is_default = False  # We'll assume actual for these
-        elif value == 0:
-            is_default = True
+        if property_name in default_values:
+            default_value = default_values[property_name]
+            if default_value is None:
+                # For properties where 0 is valid (precipitation, snow, cloud_cover)
+                is_default = value is None
+            else:
+                # For other properties, check with small tolerance for floating-point comparison
+                is_default = value is None or abs(value - default_value) < 0.01
 
         formatted = format_str.format(value)
         indicator = "(default value)" if is_default else "(current value)"
