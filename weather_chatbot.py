@@ -447,8 +447,11 @@ def format_weather_info(location, date, temp, wind_speed, wind_direction, precip
         indicator = "(default value)" if is_default_value else "(current value)"
         return f"{formatted} {indicator}"
 
+    # Format date with weekday
+    formatted_date = f"{date.strftime('%A, %Y-%m-%d')}"
+
     # Formatting the output
-    weather_info = f"""On {date.strftime('%Y-%m-%d')}, the weather in {location['name']} {verb} {condition}. 
+    weather_info = f"""On {formatted_date}, the weather in {location['name']} {verb} {condition}. 
     The average temperature {verb} {format_value(temp, is_default["temp"], "{:.2f}°C")}, with {format_value(precip, is_default["precip"], "{:.1f}mm")} of precipitation and average wind speeds 
     of {format_value(wind_speed, is_default["wind_speed"], "{:.2f}km/h")}.
 
@@ -470,7 +473,6 @@ Weather information for our pilots:
 - Ceiling Height (CIG): Information not available"""
 
     return weather_info
-
 def get_location_coordinates(location_name):
     base_url = "https://api.opencagedata.com/geocode/v1/json"
     params = {
