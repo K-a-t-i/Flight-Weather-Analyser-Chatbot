@@ -23,6 +23,7 @@ damages or losses resulting from its use.
 - [API Integrations](#api-integrations)
 - [Weather Analysis Engine](#weather-analysis-engine)
 - [Flying Conditions Analysis](#flying-conditions-analysis)
+- [Extended Configuration](#extended-configuration)
 - [Project Structure](#project-structure)
 - [Limitations](#limitations)
 - [Troubleshooting](#troubleshooting)
@@ -32,26 +33,31 @@ damages or losses resulting from its use.
 
 ## 🌦️ Overview
 
-This chatbot application provides weather information for locations 
-worldwide, including historical data, current conditions, and forecasts for up to 6 
-days in the future. It also features a rudimentary flight weather analysis system that 
+This chatbot application provides weather information for locations
+worldwide, including historical data, current conditions, and forecasts for up to 6
+days in the future. It also features a rudimentary flight weather analysis system that
 can determine an appropriate day for flying activities based on meteorological factors.
 
 ## ✨ Features
 
 - **Weather Information**: Retrieve weather data for locations and dates
-    - Historical weather data for past dates
-    - Current weather conditions
-    - Weather forecasts for up to 6 days in the future
+  - Historical weather data for past dates
+  - Current weather conditions
+  - Weather forecasts for up to 6 days in the future
 
 - **Flight Weather Analysis**: Analyse and identify suitable flying days
-    - Scoring system based on a few weather parameters
-    - Breakdown of favorable and challenging conditions
-    - Day-by-day comparison of flying conditions
+  - Scoring system based on a few weather parameters
+  - Breakdown of favorable and challenging conditions
+  - Day-by-day comparison of flying conditions
 
 - **Conversational Interface**: Natural language processing for query interpretation
-    - Extract location and date information from user queries
-    - Defaults for missing information
+  - Extract location and date information from user queries
+  - Defaults for missing information
+
+- **Robust API Handling**: Enhanced reliability and performance
+  - Retry mechanism with exponential backoff for API failures
+  - Response caching to reduce API calls and improve performance
+  - Detailed logging of all operations
 
 ## 📋 Requirements
 
@@ -161,9 +167,9 @@ Each factor contributes to a base score of 100, with bonuses for favorable condi
 
 ## ⚡ Limitations
 
-- The chatbot can only provide weather forecasts for up to 6 days in the future. 
-- Historical weather data availability may vary depending on the location and date requested. 
-- Weather prediction accuracy decreases the further into the future the forecast is made. 
+- The chatbot can only provide weather forecasts for up to 6 days in the future.
+- Historical weather data availability may vary depending on the location and date requested.
+- Weather prediction accuracy decreases the further into the future the forecast is made.
 - The analysis of flight conditions is based on the principles of general aviation but is NOT suitable for real flight activities.
 - API rate limits may affect the application's performance during heavy usage.
 
