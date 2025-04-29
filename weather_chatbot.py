@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import random
+import hashlib
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -49,6 +50,20 @@ MAX_RETRIES = int(get_env_variable("MAX_RETRIES", 3))
 BASE_RETRY_DELAY = float(get_env_variable("BASE_RETRY_DELAY", 1.0))
 MAX_RETRY_DELAY = float(get_env_variable("MAX_RETRY_DELAY", 10.0))
 
+# Cache settings
+CACHE_ENABLED = get_env_variable("CACHE_ENABLED", "True").lower() == "true"
+CACHE_DIRECTORY = get_env_variable("CACHE_DIRECTORY", "cache")
+CACHE_TTL = {
+    "coordinates": int(get_env_variable("CACHE_TTL_COORDINATES", 60 * 60 * 24 * 30)),  # 30 days for coordinates
+    "weather": int(get_env_variable("CACHE_TTL_WEATHER", 60 * 60)),  # 1 hour for weather data
+    "historical": int(get_env_variable("CACHE_TTL_HISTORICAL", 60 * 60 * 24 * 365)),  # 1 year for historical data
+}
+
+# Create cache directory if it doesn't exist
+if CACHE_ENABLED and not os.path.exists(CACHE_DIRECTORY):
+    os.makedirs(CACHE_DIRECTORY)
+    logger.info(f"Created cache directory: {CACHE_DIRECTORY}")
+
 try:
     # Initialise OpenAI API
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -57,18 +72,117 @@ except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {str(e)}")
     raise
 
-def handle_api_request(url, params, api_name):
+def generate_cache_key(url, params, api_type):
     """
-    Handle API requests with proper error handling, logging, and retry mechanism.
+    Generate a unique cache key based on the request parameters.
+
+    Args:
+        url (str): API endpoint URL
+        params (dict): Parameters for the API request
+        api_type (str): Type of API ('coordinates', 'weather', or 'historical')
+
+    Returns:
+        str: A unique hash for the request
+    """
+    # Create a sorted parameter string to ensure consistent keys
+    param_str = json.dumps(params, sort_keys=True)
+    key_data = f"{url}:{param_str}"
+
+    # Create a hash of the key data
+    hash_obj = hashlib.md5(key_data.encode())
+    cache_key = hash_obj.hexdigest()
+
+    return f"{api_type}_{cache_key}"
+
+def get_cache_path(cache_key):
+    """Get the full path to a cache file."""
+    return os.path.join(CACHE_DIRECTORY, f"{cache_key}.json")
+
+def save_to_cache(cache_key, data):
+    """
+    Save data to the cache.
+
+    Args:
+        cache_key (str): The cache key
+        data (dict): The data to cache
+    """
+    if not CACHE_ENABLED:
+        return
+
+    cache_data = {
+        "timestamp": time.time(),
+        "data": data
+    }
+
+    cache_path = get_cache_path(cache_key)
+
+    try:
+        with open(cache_path, 'w') as f:
+            json.dump(cache_data, f)
+        logger.debug(f"Saved data to cache: {cache_key}")
+    except Exception as e:
+        logger.warning(f"Failed to save data to cache: {str(e)}")
+
+def get_from_cache(cache_key, ttl):
+    """
+    Retrieve data from the cache if it exists and is not expired.
+
+    Args:
+        cache_key (str): The cache key
+        ttl (int): Time-to-live in seconds
+
+    Returns:
+        tuple: (cache_hit, data) where cache_hit is a boolean and data is the cached data or None
+    """
+    if not CACHE_ENABLED:
+        return False, None
+
+    cache_path = get_cache_path(cache_key)
+
+    if not os.path.exists(cache_path):
+        return False, None
+
+    try:
+        with open(cache_path, 'r') as f:
+            cache_data = json.load(f)
+
+        timestamp = cache_data.get("timestamp", 0)
+        data = cache_data.get("data")
+
+        # Check if the cache is still valid
+        if time.time() - timestamp <= ttl:
+            logger.debug(f"Cache hit for: {cache_key}")
+            return True, data
+        else:
+            logger.debug(f"Cache expired for: {cache_key}")
+            return False, None
+    except Exception as e:
+        logger.warning(f"Failed to read from cache: {str(e)}")
+        return False, None
+
+def handle_api_request(url, params, api_name, cache_type=None):
+    """
+    Handle API requests with proper error handling, logging, caching, and retry mechanism.
 
     Args:
         url (str): API endpoint URL
         params (dict): Parameters for the API request
         api_name (str): Name of the API for logging purposes
+        cache_type (str, optional): Type of cache to use ('coordinates', 'weather', 'historical')
 
     Returns:
         tuple: (success, data) where success is a boolean and data is the JSON response or error message
     """
+    # Check cache if enabled and cache_type is provided
+    if cache_type and CACHE_ENABLED:
+        cache_key = generate_cache_key(url, params, cache_type)
+        cache_ttl = CACHE_TTL.get(cache_type, 3600)  # Default to 1 hour if type not found
+
+        cache_hit, cached_data = get_from_cache(cache_key, cache_ttl)
+        if cache_hit:
+            logger.info(f"Using cached data for {api_name} API request")
+            return True, cached_data
+
     retries = 0
 
     while retries <= MAX_RETRIES:
@@ -91,6 +205,11 @@ def handle_api_request(url, params, api_name):
             if response.status_code == 200:
                 data = response.json()
                 logger.info(f"Successful {api_name} API response")
+
+                # Save to cache if caching is enabled
+                if cache_type and CACHE_ENABLED:
+                    save_to_cache(cache_key, data)
+
                 return True, data
             else:
                 error_msg = f"{api_name} API returned status code {response.status_code}"
@@ -184,7 +303,7 @@ def get_future_weather_data(location, date):
         "tz": "UTC"
     }
 
-    success, response_data = handle_api_request(base_url, params, "Meteoblue")
+    success, response_data = handle_api_request(base_url, params, "Meteoblue", cache_type="weather")
 
     if not success:
         return f"Sorry, I couldn't retrieve the weather information at this time. {response_data}"
@@ -227,7 +346,7 @@ def get_historical_weather_data(location, date):
         "contentType": "json",
     }
 
-    success, response_data = handle_api_request(base_url, params, "VisualCrossing")
+    success, response_data = handle_api_request(base_url, params, "VisualCrossing", cache_type="historical")
 
     if not success:
         return f"Sorry, I couldn't retrieve the historical weather information at this time. {response_data}"
@@ -311,7 +430,7 @@ def get_location_coordinates(location_name):
         "limit": 1
     }
 
-    success, response_data = handle_api_request(base_url, params, "OpenCage")
+    success, response_data = handle_api_request(base_url, params, "OpenCage", cache_type="coordinates")
 
     if not success:
         logger.error(f"Failed to get coordinates for location: {location_name}")
@@ -327,6 +446,7 @@ def get_location_coordinates(location_name):
     else:
         logger.warning(f"No results found for location: {location_name}")
         return None
+
 def parse_date(date_string):
     # Handle day names first
     days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
