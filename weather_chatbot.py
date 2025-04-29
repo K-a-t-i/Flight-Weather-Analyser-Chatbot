@@ -2,6 +2,8 @@ import os
 import requests
 import json
 import logging
+import time
+import random
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -42,6 +44,11 @@ METEOBLUE_API_KEY = get_env_variable("METEOBLUE_API_KEY", required=True)  # futu
 OPENCAGE_API_KEY = get_env_variable("OPENCAGE_API_KEY", required=True)  # location_coordinates
 VISUALCROSSING_API_KEY = get_env_variable("VISUALCROSSING_API_KEY", required=True)  # historical_weather_data
 
+# Retry configuration
+MAX_RETRIES = int(get_env_variable("MAX_RETRIES", 3))
+BASE_RETRY_DELAY = float(get_env_variable("BASE_RETRY_DELAY", 1.0))
+MAX_RETRY_DELAY = float(get_env_variable("MAX_RETRY_DELAY", 10.0))
+
 try:
     # Initialise OpenAI API
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -52,7 +59,7 @@ except Exception as e:
 
 def handle_api_request(url, params, api_name):
     """
-    Handle API requests with proper error handling and logging.
+    Handle API requests with proper error handling, logging, and retry mechanism.
 
     Args:
         url (str): API endpoint URL
@@ -62,35 +69,66 @@ def handle_api_request(url, params, api_name):
     Returns:
         tuple: (success, data) where success is a boolean and data is the JSON response or error message
     """
-    try:
-        logger.info(f"Making {api_name} API request to {url}")
-        response = requests.get(url, params=params, timeout=10)
+    retries = 0
 
-        if response.status_code == 200:
-            data = response.json()
-            logger.info(f"Successful {api_name} API response")
-            return True, data
-        else:
-            error_msg = f"{api_name} API returned status code {response.status_code}"
+    while retries <= MAX_RETRIES:
+        try:
+            if retries > 0:
+                # Calculate backoff delay with jitter
+                delay = min(BASE_RETRY_DELAY * (2 ** (retries - 1)) + random.uniform(0, 0.5), MAX_RETRY_DELAY)
+                logger.info(f"Retry {retries}/{MAX_RETRIES} for {api_name} API request after {delay:.2f}s delay")
+                time.sleep(delay)
+
+            logger.info(f"Making {api_name} API request to {url}" + (f" (retry {retries})" if retries > 0 else ""))
+            response = requests.get(url, params=params, timeout=10)
+
+            # Check for rate limiting or server errors that should trigger retries
+            if response.status_code in [429, 500, 502, 503, 504]:
+                retries += 1
+                logger.warning(f"{api_name} API returned status code {response.status_code}, triggering retry")
+                continue
+
+            if response.status_code == 200:
+                data = response.json()
+                logger.info(f"Successful {api_name} API response")
+                return True, data
+            else:
+                error_msg = f"{api_name} API returned status code {response.status_code}"
+                logger.error(error_msg)
+                return False, f"Error: {error_msg}"
+
+        except requests.exceptions.Timeout:
+            retries += 1
+            if retries <= MAX_RETRIES:
+                logger.warning(f"{api_name} API request timed out, retry {retries}/{MAX_RETRIES}")
+                continue
+            error_msg = f"{api_name} API request timed out after {MAX_RETRIES} retries"
             logger.error(error_msg)
             return False, f"Error: {error_msg}"
 
-    except requests.exceptions.Timeout:
-        error_msg = f"{api_name} API request timed out"
-        logger.error(error_msg)
-        return False, f"Error: {error_msg}"
-    except requests.exceptions.ConnectionError:
-        error_msg = f"Connection error when accessing {api_name} API"
-        logger.error(error_msg)
-        return False, f"Error: {error_msg}"
-    except json.JSONDecodeError:
-        error_msg = f"Invalid JSON response from {api_name} API"
-        logger.error(error_msg)
-        return False, f"Error: {error_msg}"
-    except Exception as e:
-        error_msg = f"Unexpected error in {api_name} API request: {str(e)}"
-        logger.error(error_msg)
-        return False, f"Error: {error_msg}"
+        except requests.exceptions.ConnectionError:
+            retries += 1
+            if retries <= MAX_RETRIES:
+                logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{MAX_RETRIES}")
+                continue
+            error_msg = f"Connection error when accessing {api_name} API after {MAX_RETRIES} retries"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+        except json.JSONDecodeError:
+            error_msg = f"Invalid JSON response from {api_name} API"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+        except Exception as e:
+            error_msg = f"Unexpected error in {api_name} API request: {str(e)}"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+    # This code should only be reached if all retries were used up
+    error_msg = f"All {MAX_RETRIES} retries failed for {api_name} API request"
+    logger.error(error_msg)
+    return False, f"Error: {error_msg}"
 
 def calculate_daily_averages(forecast, day_start_idx, day_end_idx):
     """
@@ -289,7 +327,6 @@ def get_location_coordinates(location_name):
     else:
         logger.warning(f"No results found for location: {location_name}")
         return None
-
 def parse_date(date_string):
     # Handle day names first
     days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
