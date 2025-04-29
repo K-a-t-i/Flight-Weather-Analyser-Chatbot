@@ -5,6 +5,7 @@ import logging
 import time
 import random
 import hashlib
+import re
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -496,21 +497,59 @@ def get_location_coordinates(location_name):
         return None
 
 def parse_date(date_string):
+    """
+    Parse a date string into a datetime.date object with improved handling
+    for relative dates and ambiguous inputs.
+    """
+    # Normalize input
+    date_string = date_string.lower().strip()
+
+    # Handle common "next week" case
+    if date_string == "next week":
+        current_date = datetime.now().date()
+        return current_date + timedelta(days=7)
+
     # Handle day names first
     days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
     day_name = date_string.lower()
-    if day_name in days:
-        current_date = datetime.now().date()
-        current_day = current_date.weekday()
-        target_day = days.index(day_name)
-        days_ahead = target_day - current_day
-        if days_ahead <= 0:  # Target day is today or in the past week
-            days_ahead += 7
-        return current_date + timedelta(days=days_ahead)
 
-    # If not a day name, use dateparser
-    parsed_date = dateparser.parse(date_string, settings={'RELATIVE_BASE': datetime.now(),
-                                                          'PREFER_DATES_FROM': 'future'})
+    for day in days:
+        if day in day_name:
+            current_date = datetime.now().date()
+            current_day = current_date.weekday()
+            target_day = days.index(day)
+
+            # If query contains "next" (e.g., "next monday"), always go to next week
+            if "next" in day_name:
+                days_ahead = 7 - current_day + target_day
+                if days_ahead >= 7:
+                    days_ahead -= 7
+                days_ahead += 7  # Add another week
+                return current_date + timedelta(days=days_ahead)
+
+            # Standard calculation for current week, wrapping to next week if needed
+            days_ahead = target_day - current_day
+            if days_ahead <= 0:  # Target day is today or in the past week
+                days_ahead += 7
+            return current_date + timedelta(days=days_ahead)
+
+    # Handle "in X days" pattern
+    days_pattern = re.compile(r'in\s+(\d+)\s+days?')
+    match = days_pattern.search(date_string)
+    if match:
+        days = int(match.group(1))
+        return datetime.now().date() + timedelta(days=days)
+
+    # If not a day name or special pattern, use dateparser
+    parsed_date = dateparser.parse(
+        date_string,
+        settings={
+            'RELATIVE_BASE': datetime.now(),
+            'PREFER_DATES_FROM': 'future',
+            'STRICT_PARSING': False
+        }
+    )
+
     if parsed_date:
         return parsed_date.date()
     else:
