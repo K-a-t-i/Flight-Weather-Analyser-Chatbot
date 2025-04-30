@@ -420,24 +420,74 @@ def format_weather_info(location, date, temp, wind_speed, wind_direction, precip
     # Estimating fog/mist
     fog_or_mist = "No fog/mist reported" if relative_humidity < 90 else "Possible fog/mist (FG/BR)"
 
-    # Weather condition determination
-    if snow > 0:
-        condition = "snowy"
-    elif precip > 5:
-        condition = "rainy"
-    elif relative_humidity > 90:
-        condition = "foggy"
-    elif cloud_cover < 20:
-        condition = "sunny"
-    elif cloud_cover < 70:
-        condition = "partly cloudy"
-    else:
-        condition = "cloudy"
+    # Enhanced weather condition determination
+    primary_condition = ""
+    condition_details = []
 
-    if temp < 0:
-        condition = "freezing " + condition
+    # Primary condition based on precipitation and clouds
+    if snow > 0:
+        if snow > 10:
+            primary_condition = "heavily snowing"
+        else:
+            primary_condition = "snowy"
+        condition_details.append("snow-covered")
+    elif precip > 0:
+        if precip > 15:
+            primary_condition = "stormy with heavy rain"
+        elif precip > 5:
+            primary_condition = "rainy"
+        else:
+            primary_condition = "drizzly"
+
+    elif relative_humidity > 90 and cloud_cover > 80:
+        primary_condition = "foggy"
+        condition_details.append("misty")
+    elif cloud_cover < 10:
+        primary_condition = "clear and sunny"
+        condition_details.append("bright")
+    elif cloud_cover < 30:
+        primary_condition = "mostly sunny"
+        condition_details.append("pleasant")
+    elif cloud_cover < 60:
+        primary_condition = "partly cloudy"
+    else:
+        primary_condition = "overcast"
+
+    # Wind descriptors
+    if wind_speed > 40:
+        condition_details.append("very windy")
+    elif wind_speed > 20:
+        condition_details.append("breezy")
+
+    # Temperature descriptors
+    if temp < -10:
+        condition_details.append("bitterly cold")
+    elif temp < 0:
+        condition_details.append("frosty")
+    elif temp < 10:
+        condition_details.append("chilly")
+    elif 15 <= temp <= 25:
+        condition_details.append("comfortable")
     elif temp > 30:
-        condition = "hot and " + condition
+        condition_details.append("hot")
+    elif temp > 35:
+        condition_details.append("red-hot")
+
+    # Special combinations
+    if primary_condition == "clear and sunny" and temp > 25:
+        primary_condition = "brilliantly sunny"
+    if primary_condition == "overcast" and temp < 5:
+        primary_condition = "gloomy and cold"
+
+    # Pressure-based additions
+    if pressure > 1025 and cloud_cover < 30:
+        condition_details.append("with excellent visibility")
+
+    # Combine conditions into a rich description
+    if condition_details:
+        condition = f"{primary_condition}, {' and '.join(condition_details)}"
+    else:
+        condition = primary_condition
 
     verb = "was" if is_historical else "is expected to be"
 
@@ -473,6 +523,7 @@ Weather information for our pilots:
 - Ceiling Height (CIG): Information not available"""
 
     return weather_info
+
 def get_location_coordinates(location_name):
     base_url = "https://api.opencagedata.com/geocode/v1/json"
     params = {
