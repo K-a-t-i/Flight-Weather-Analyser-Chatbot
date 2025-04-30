@@ -3,42 +3,24 @@ import requests
 import json
 import logging
 import time
-import random
-import hashlib
-import re
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
-import dateparser
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Import utility functions from utils module
+from utils import (
+    get_env_variable,
+    generate_cache_key,
+    get_cache_path,
+    save_to_cache,
+    get_from_cache,
+    parse_date,
+    handle_api_request,
+    logger
+)
 
 # Load environment variables
 load_dotenv()
-
-def get_env_variable(var_name, default=None, required=False):
-    """
-    Get an environment variable with optional default value and requirement check.
-
-    Args:
-        var_name (str): Name of the environment variable
-        default (any, optional): Default value if variable is not found
-        required (bool): Whether the variable is required
-
-    Returns:
-        The environment variable value or default
-
-    Raises:
-        ValueError: If the variable is required but not found
-    """
-    value = os.getenv(var_name, default)
-    if value is None and required:
-        error_msg = f"Required environment variable {var_name} not set"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    return value
 
 # Set up API keys with validation
 OPENAI_API_KEY = get_env_variable("OPENAI_API_KEY", required=True)  # chatbot
@@ -60,6 +42,16 @@ CACHE_TTL = {
     "historical": int(get_env_variable("CACHE_TTL_HISTORICAL", 60 * 60 * 24 * 365)),  # 1 year for historical data
 }
 
+# Set up cache configuration for passing to handle_api_request
+CACHE_CONFIG = {
+    'enabled': CACHE_ENABLED,
+    'directory': CACHE_DIRECTORY,
+    'ttl': CACHE_TTL,
+    'max_retries': MAX_RETRIES,
+    'base_retry_delay': BASE_RETRY_DELAY,
+    'max_retry_delay': MAX_RETRY_DELAY
+}
+
 # Create cache directory if it doesn't exist
 if CACHE_ENABLED and not os.path.exists(CACHE_DIRECTORY):
     os.makedirs(CACHE_DIRECTORY)
@@ -72,183 +64,6 @@ try:
 except Exception as e:
     logger.error(f"Failed to initialize OpenAI client: {str(e)}")
     raise
-
-def generate_cache_key(url, params, api_type):
-    """
-    Generate a unique cache key based on the request parameters.
-
-    Args:
-        url (str): API endpoint URL
-        params (dict): Parameters for the API request
-        api_type (str): Type of API ('coordinates', 'weather', or 'historical')
-
-    Returns:
-        str: A unique hash for the request
-    """
-    # Create a sorted parameter string to ensure consistent keys
-    param_str = json.dumps(params, sort_keys=True)
-    key_data = f"{url}:{param_str}"
-
-    # Create a hash of the key data
-    hash_obj = hashlib.md5(key_data.encode())
-    cache_key = hash_obj.hexdigest()
-
-    return f"{api_type}_{cache_key}"
-
-def get_cache_path(cache_key):
-    """Get the full path to a cache file."""
-    return os.path.join(CACHE_DIRECTORY, f"{cache_key}.json")
-
-def save_to_cache(cache_key, data):
-    """
-    Save data to the cache.
-
-    Args:
-        cache_key (str): The cache key
-        data (dict): The data to cache
-    """
-    if not CACHE_ENABLED:
-        return
-
-    cache_data = {
-        "timestamp": time.time(),
-        "data": data
-    }
-
-    cache_path = get_cache_path(cache_key)
-
-    try:
-        with open(cache_path, 'w') as f:
-            json.dump(cache_data, f)
-        logger.debug(f"Saved data to cache: {cache_key}")
-    except Exception as e:
-        logger.warning(f"Failed to save data to cache: {str(e)}")
-
-def get_from_cache(cache_key, ttl):
-    """
-    Retrieve data from the cache if it exists and is not expired.
-
-    Args:
-        cache_key (str): The cache key
-        ttl (int): Time-to-live in seconds
-
-    Returns:
-        tuple: (cache_hit, data) where cache_hit is a boolean and data is the cached data or None
-    """
-    if not CACHE_ENABLED:
-        return False, None
-
-    cache_path = get_cache_path(cache_key)
-
-    if not os.path.exists(cache_path):
-        return False, None
-
-    try:
-        with open(cache_path, 'r') as f:
-            cache_data = json.load(f)
-
-        timestamp = cache_data.get("timestamp", 0)
-        data = cache_data.get("data")
-
-        # Check if the cache is still valid
-        if time.time() - timestamp <= ttl:
-            logger.debug(f"Cache hit for: {cache_key}")
-            return True, data
-        else:
-            logger.debug(f"Cache expired for: {cache_key}")
-            return False, None
-    except Exception as e:
-        logger.warning(f"Failed to read from cache: {str(e)}")
-        return False, None
-
-def handle_api_request(url, params, api_name, cache_type=None):
-    """
-    Handle API requests with proper error handling, logging, caching, and retry mechanism.
-
-    Args:
-        url (str): API endpoint URL
-        params (dict): Parameters for the API request
-        api_name (str): Name of the API for logging purposes
-        cache_type (str, optional): Type of cache to use ('coordinates', 'weather', 'historical')
-
-    Returns:
-        tuple: (success, data) where success is a boolean and data is the JSON response or error message
-    """
-    # Check cache if enabled and cache_type is provided
-    if cache_type and CACHE_ENABLED:
-        cache_key = generate_cache_key(url, params, cache_type)
-        cache_ttl = CACHE_TTL.get(cache_type, 3600)  # Default to 1 hour if type not found
-
-        cache_hit, cached_data = get_from_cache(cache_key, cache_ttl)
-        if cache_hit:
-            logger.info(f"Using cached data for {api_name} API request")
-            return True, cached_data
-
-    retries = 0
-
-    while retries <= MAX_RETRIES:
-        try:
-            if retries > 0:
-                # Calculate backoff delay with jitter
-                delay = min(BASE_RETRY_DELAY * (2 ** (retries - 1)) + random.uniform(0, 0.5), MAX_RETRY_DELAY)
-                logger.info(f"Retry {retries}/{MAX_RETRIES} for {api_name} API request after {delay:.2f}s delay")
-                time.sleep(delay)
-
-            logger.info(f"Making {api_name} API request to {url}" + (f" (retry {retries})" if retries > 0 else ""))
-            response = requests.get(url, params=params, timeout=10)
-
-            # Check for rate limiting or server errors that should trigger retries
-            if response.status_code in [429, 500, 502, 503, 504]:
-                retries += 1
-                logger.warning(f"{api_name} API returned status code {response.status_code}, triggering retry")
-                continue
-
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"Successful {api_name} API response")
-
-                # Save to cache if caching is enabled
-                if cache_type and CACHE_ENABLED:
-                    save_to_cache(cache_key, data)
-
-                return True, data
-            else:
-                error_msg = f"{api_name} API returned status code {response.status_code}"
-                logger.error(error_msg)
-                return False, f"Error: {error_msg}"
-
-        except requests.exceptions.Timeout:
-            retries += 1
-            if retries <= MAX_RETRIES:
-                logger.warning(f"{api_name} API request timed out, retry {retries}/{MAX_RETRIES}")
-                continue
-            error_msg = f"{api_name} API request timed out after {MAX_RETRIES} retries"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except requests.exceptions.ConnectionError:
-            retries += 1
-            if retries <= MAX_RETRIES:
-                logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{MAX_RETRIES}")
-                continue
-            error_msg = f"Connection error when accessing {api_name} API after {MAX_RETRIES} retries"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except json.JSONDecodeError:
-            error_msg = f"Invalid JSON response from {api_name} API"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except Exception as e:
-            error_msg = f"Unexpected error in {api_name} API request: {str(e)}"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-    # This code should only be reached if all retries were used up
-    error_msg = f"All {MAX_RETRIES} retries failed for {api_name} API request"
-    logger.error(error_msg)
-    return False, f"Error: {error_msg}"
 
 def calculate_daily_averages(forecast, day_start_idx, day_end_idx):
     """
@@ -304,7 +119,13 @@ def get_future_weather_data(location, date):
         "tz": "UTC"
     }
 
-    success, response_data = handle_api_request(base_url, params, "Meteoblue", cache_type="weather")
+    success, response_data = handle_api_request(
+        base_url,
+        params,
+        "Meteoblue",
+        cache_type="weather",
+        cache_config=CACHE_CONFIG
+    )
 
     if not success:
         return f"Sorry, I couldn't retrieve the weather information at this time. {response_data}"
@@ -347,7 +168,13 @@ def get_historical_weather_data(location, date):
         "contentType": "json",
     }
 
-    success, response_data = handle_api_request(base_url, params, "VisualCrossing", cache_type="historical")
+    success, response_data = handle_api_request(
+        base_url,
+        params,
+        "VisualCrossing",
+        cache_type="historical",
+        cache_config=CACHE_CONFIG
+    )
 
     if not success:
         return f"Sorry, I couldn't retrieve the historical weather information at this time. {response_data}"
@@ -389,11 +216,11 @@ def format_weather_info(location, date, temp, wind_speed, wind_direction, precip
         "temp": temp is None or abs(temp) < 0.01,  # Allowing for floating point imprecision
         "wind_speed": wind_speed is None or wind_speed < 0.01,
         "wind_direction": wind_direction is None,
-        "precip": precip is None,  # Now only None is considered default, 0 is a valid measurement
-        "snow": snow is None,      # Now only None is considered default, 0 is a valid measurement
+        "precip": precip is None,  # None is considered default, 0 is a valid measurement
+        "snow": snow is None,      # None is considered default, 0 is a valid measurement
         "relative_humidity": relative_humidity is None or relative_humidity < 0.01,
         "pressure": pressure is None or abs(pressure - 1013.0) < 0.01,  # Close to standard pressure
-        "cloud_cover": cloud_cover is None,  # Now only None is considered default, 0 is a valid measurement
+        "cloud_cover": cloud_cover is None,  # None is considered default, 0 is a valid measurement
     }
 
     # Set default values for missing data
@@ -532,7 +359,13 @@ def get_location_coordinates(location_name):
         "limit": 1
     }
 
-    success, response_data = handle_api_request(base_url, params, "OpenCage", cache_type="coordinates")
+    success, response_data = handle_api_request(
+        base_url,
+        params,
+        "OpenCage",
+        cache_type="coordinates",
+        cache_config=CACHE_CONFIG
+    )
 
     if not success:
         logger.error(f"Failed to get coordinates for location: {location_name}")
@@ -548,65 +381,6 @@ def get_location_coordinates(location_name):
     else:
         logger.warning(f"No results found for location: {location_name}")
         return None
-
-def parse_date(date_string):
-    """
-    Parse a date string into a datetime.date object with improved handling
-    for relative dates and ambiguous inputs.
-    """
-    # Normalize input
-    date_string = date_string.lower().strip()
-
-    # Handle common "next week" case
-    if date_string == "next week":
-        current_date = datetime.now().date()
-        return current_date + timedelta(days=7)
-
-    # Handle day names first
-    days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
-    day_name = date_string.lower()
-
-    for day in days:
-        if day in day_name:
-            current_date = datetime.now().date()
-            current_day = current_date.weekday()
-            target_day = days.index(day)
-
-            # If query contains "next" (e.g., "next monday"), always go to next week
-            if "next" in day_name:
-                days_ahead = 7 - current_day + target_day
-                if days_ahead >= 7:
-                    days_ahead -= 7
-                days_ahead += 7  # Add another week
-                return current_date + timedelta(days=days_ahead)
-
-            # Standard calculation for current week, wrapping to next week if needed
-            days_ahead = target_day - current_day
-            if days_ahead <= 0:  # Target day is today or in the past week
-                days_ahead += 7
-            return current_date + timedelta(days=days_ahead)
-
-    # Handle "in X days" pattern
-    days_pattern = re.compile(r'in\s+(\d+)\s+days?')
-    match = days_pattern.search(date_string)
-    if match:
-        days = int(match.group(1))
-        return datetime.now().date() + timedelta(days=days)
-
-    # If not a day name or special pattern, use dateparser
-    parsed_date = dateparser.parse(
-        date_string,
-        settings={
-            'RELATIVE_BASE': datetime.now(),
-            'PREFER_DATES_FROM': 'future',
-            'STRICT_PARSING': False
-        }
-    )
-
-    if parsed_date:
-        return parsed_date.date()
-    else:
-        raise ValueError(f"Unable to parse date: {date_string}")
 
 def get_weather(location, date):
     coordinates = get_location_coordinates(location)
@@ -658,7 +432,13 @@ def get_optimal_flying_day(location):
             "tz": "UTC"
         }
 
-        success, response_data = handle_api_request(base_url, params, "Meteoblue (flying day)", cache_type="weather")
+        success, response_data = handle_api_request(
+            base_url,
+            params,
+            "Meteoblue (flying day)",
+            cache_type="weather",
+            cache_config=CACHE_CONFIG
+        )
 
         if not success:
             logger.warning(f"Failed to get weather data for day {day_offset} ({forecast_date})")
