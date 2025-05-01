@@ -242,9 +242,25 @@ def handle_flying_day_request(query):
         else:
             logger.warning("No function call in OpenAI response")
             return "I need a location to check for optimal flying conditions. Please specify a city or area."
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in OpenAI response: {str(e)}")
+        return "I encountered an error processing the location information. Please try again with a clearer location."
     except Exception as e:
-        logger.error(f"Error in handling flying day request: {str(e)}")
-        return "I'm sorry, I encountered an error while processing your request. Please try again."
+        # Log the specific error for debugging
+        error_type = type(e).__name__
+        error_message = str(e)
+        logger.error(f"Error in handling flying day request: {error_type} - {error_message}")
+
+        # Provide error message based on error type
+        if "RateLimitError" in error_type:
+            return "I'm currently experiencing high demand. Please try again in a moment."
+        elif "AuthenticationError" in error_type:
+            return "I'm having trouble with my authentication system. Please report this issue to the administrator."
+        elif "APIConnectionError" in error_type or "APITimeoutError" in error_type:
+            return "I'm having trouble connecting to my knowledge system. Please check your internet connection and try again."
+        else:
+            # Generic message for other errors
+            return "I encountered an unexpected error while processing your request. Please try again."
 
 def handle_conversation(query):
     """
@@ -320,9 +336,25 @@ def handle_conversation(query):
             logger.info("No function call - regular conversation")
             return message.content
 
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error in OpenAI response: {str(e)}")
+        return "I encountered an error understanding your question. Could you please rephrase it?"
     except Exception as e:
-        logger.error(f"Error handling conversation: {str(e)}")
-        return "I'm sorry, I encountered an error while processing your request. Please try again."
+        # Log error type and message for debugging
+        error_type = type(e).__name__
+        error_message = str(e)
+        logger.error(f"Error handling conversation: {error_type} - {error_message}")
+
+        # Provide responses based on error type
+        if "RateLimitError" in error_type:
+            return "I'm currently experiencing high demand. Please try again in a moment."
+        elif "AuthenticationError" in error_type:
+            return "I'm having trouble with my authentication system. Please report this issue to the administrator."
+        elif "APIConnectionError" in error_type or "APITimeoutError" in error_type:
+            return "I'm having trouble connecting to my knowledge system. Please check your internet connection and try again."
+        else:
+            # Generic message for other errors
+            return "I'm sorry, I encountered an error while processing your request. Please try again."
 
 def main():
     """Main function to run the weather chatbot."""
