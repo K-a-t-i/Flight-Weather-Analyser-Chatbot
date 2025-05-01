@@ -380,8 +380,16 @@ def main():
             if flying_mode and not any(keyword in user_input.lower() for keyword in flying_keywords):
                 # User is providing just a location after being asked
                 logger.info(f"Processing location for flying day: {user_input}")
-                response = handle_flying_day_request(f"What is the best day to fly in {user_input}?")
-                flying_mode = False
+                try:
+                    response = handle_flying_day_request(f"What is the best day to fly in {user_input}?")
+                    flying_mode = False  # Reset flying mode after handling
+                    print(f"Chatbot: {response}")
+                except Exception as e:
+                    flying_mode = False  # Reset flying mode on error
+                    logger.error(f"Error processing flying location '{user_input}': {str(e)}")
+                    print(f"Chatbot: I'm sorry, I couldn't process that location. Please try a different city name.")
+                continue  # Skip the rest of the loop to avoid double processing
+
             # Check if this is a new flying day request
             elif any(keyword in user_input.lower() for keyword in flying_keywords):
                 logger.info("Detected flying day request")
@@ -400,18 +408,24 @@ def main():
                     flying_mode = True
                     continue
                 else:
-                    response = handle_flying_day_request(user_input)
-                    flying_mode = False
+                    try:
+                        response = handle_flying_day_request(user_input)
+                        flying_mode = False  # Ensure app is not in flying mode
+                    except Exception as e:
+                        flying_mode = False  # Reset flying mode on error
+                        logger.error(f"Error processing flying request: {str(e)}")
+                        response = "I'm sorry, I couldn't process your flying request. Is the location you provided a valid city name?"
             else:
                 logger.info("Processing general conversation query")
                 response = handle_conversation(user_input)
-                flying_mode = False
+                flying_mode = False  # Ensure app is not in flying mode
 
             print(f"Chatbot: {response}")
         except Exception as e:
+            # Catch-all error handler - always reset flying mode
+            flying_mode = False
             logger.error(f"Error in main loop: {str(e)}")
             print(f"Chatbot: I'm sorry, I encountered an error: {str(e)}")
-            flying_mode = False
 
 if __name__ == "__main__":
     main()
