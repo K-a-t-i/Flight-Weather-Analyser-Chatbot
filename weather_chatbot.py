@@ -233,7 +233,7 @@ def handle_flying_day_request(query):
         if message.function_call:
             function_args = json.loads(message.function_call.arguments)
             # Use the default location from config if none provided
-            location = function_args.get("location", config.get("DEFAULT_LOCATION", "Berlin"))
+            location = function_args.get("location", config.default_location)
             logger.info(f"Extracted location from query: {location}")
 
             # Get and format the optimal flying day information
@@ -282,11 +282,11 @@ def handle_conversation(query):
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant that can engage in general conversation and "
-                                              "provide weather information when asked. You can provide historical weather "
-                                              "data for past dates, current weather, and forecasts for up to 6 days in the "
-                                              "future. If the user doesn't specify a location or date for weather, assume "
-                                              "they're asking about the default location for today."},
+                {"role": "system", "content": f"You are a helpful assistant that can engage in general conversation and "
+                                              f"provide weather information when asked. You can provide historical weather "
+                                              f"data for past dates, current weather, and forecasts for up to 6 days in the "
+                                              f"future. If the user doesn't specify a location or date for weather, assume "
+                                              f"they're asking about {config.default_location} for today."},
                 {"role": "user", "content": query}
             ],
             functions=functions,
@@ -302,7 +302,7 @@ def handle_conversation(query):
 
             if function_name == "get_weather":
                 # Use the default location from config if none provided
-                location = function_args.get("location", config.get("DEFAULT_LOCATION", "Berlin"))
+                location = function_args.get("location", config.default_location)
                 date_string = function_args.get("date", "today")
 
                 try:
@@ -328,13 +328,13 @@ def main():
     """Main function to run the weather chatbot."""
     logger.info("Starting Weather Chatbot with flight weather analyser")
     print("Welcome to our Weather Chatbot with flight weather analyser initialised by Sasha & Fabian & Fabio.")
+    print(f"Default location set to: {config.default_location}")
     print("You can ask about the weather for any location in the world, for past dates, today, and up to 6 days in the future.")
     print("You can also ask for the appropriate day for flying in any location!")
     print("Type 'exit' to quit the chatbot.")
 
     flying_mode = False  # Track if we're in flying analysis mode
     flying_keywords = ["fly", "flying", "flight", "optimal", "best day", "pilot"]
-    default_location = config.get("DEFAULT_LOCATION", "Berlin")  # Get default location from config
 
     while True:
         user_input = input("\nYou: ").strip()

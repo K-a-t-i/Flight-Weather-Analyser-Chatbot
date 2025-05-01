@@ -77,7 +77,7 @@ class Config:
         max_retry_delay = self.get("MAX_RETRY_DELAY", "10.0", value_type="float")
 
         # Add default location
-        self._config_values["DEFAULT_LOCATION"] = self.get("DEFAULT_LOCATION", "Markt Nordheim")
+        self._config_values["DEFAULT_LOCATION"] = self.get("DEFAULT_LOCATION", "Berlin")
 
         # Cache TTL settings
         self._cache_config = {
@@ -205,6 +205,11 @@ class Config:
     def cache_config(self) -> Dict[str, Any]:
         """Get cache configuration dictionary."""
         return self._cache_config
+
+    @property
+    def default_location(self) -> str:
+        """Get the default location for weather queries."""
+        return self._config_values.get("DEFAULT_LOCATION", "Berlin")
 
     def reload(self) -> None:
         """Reload configuration from environment and defaults."""
