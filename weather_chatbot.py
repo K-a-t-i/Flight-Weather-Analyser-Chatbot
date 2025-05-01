@@ -1,641 +1,52 @@
-import os
-import requests
 import json
-import logging
-import time
+import os
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# Import utility functions from utils module
+# Import utility functions from the utils module
 from utils import (
     get_env_variable,
-    generate_cache_key,
-    get_cache_path,
-    save_to_cache,
-    get_from_cache,
     parse_date,
-    handle_api_request,
     logger
+)
+
+# Import Config and WeatherService
+from config import Config
+from weather_service import (
+    WeatherService,
+    LocationNotFoundException,
+    ApiRequestException
 )
 
 # Load environment variables
 load_dotenv()
 
-# Set up API keys with validation
-OPENAI_API_KEY = get_env_variable("OPENAI_API_KEY", required=True)  # chatbot
-METEOBLUE_API_KEY = get_env_variable("METEOBLUE_API_KEY", required=True)  # future_weather_data
-OPENCAGE_API_KEY = get_env_variable("OPENCAGE_API_KEY", required=True)  # location_coordinates
-VISUALCROSSING_API_KEY = get_env_variable("VISUALCROSSING_API_KEY", required=True)  # historical_weather_data
-
-# Retry configuration
-MAX_RETRIES = int(get_env_variable("MAX_RETRIES", 3))
-BASE_RETRY_DELAY = float(get_env_variable("BASE_RETRY_DELAY", 1.0))
-MAX_RETRY_DELAY = float(get_env_variable("MAX_RETRY_DELAY", 10.0))
-
-# Cache settings
-CACHE_ENABLED = get_env_variable("CACHE_ENABLED", "True").lower() == "true"
-CACHE_DIRECTORY = get_env_variable("CACHE_DIRECTORY", "cache")
-CACHE_TTL = {
-    "coordinates": int(get_env_variable("CACHE_TTL_COORDINATES", 60 * 60 * 24 * 30)),  # 30 days for coordinates
-    "weather": int(get_env_variable("CACHE_TTL_WEATHER", 60 * 60)),  # 1 hour for weather data
-    "historical": int(get_env_variable("CACHE_TTL_HISTORICAL", 60 * 60 * 24 * 365)),  # 1 year for historical data
-}
-
-# Set up cache configuration for passing to handle_api_request
-CACHE_CONFIG = {
-    'enabled': CACHE_ENABLED,
-    'directory': CACHE_DIRECTORY,
-    'ttl': CACHE_TTL,
-    'max_retries': MAX_RETRIES,
-    'base_retry_delay': BASE_RETRY_DELAY,
-    'max_retry_delay': MAX_RETRY_DELAY
-}
-
-# Create cache directory if it doesn't exist
-if CACHE_ENABLED and not os.path.exists(CACHE_DIRECTORY):
-    os.makedirs(CACHE_DIRECTORY)
-    logger.info(f"Created cache directory: {CACHE_DIRECTORY}")
+# Initialise configuration
+config = Config()
 
 try:
     # Initialise OpenAI API
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    logger.info("Successfully initialized OpenAI client")
+    client = OpenAI(api_key=config.api_keys["openai"])
+    logger.info("Successfully initialised OpenAI client")
+
+    # Initialise the WeatherService with the config
+    weather_service = WeatherService(config=config)
+    logger.info("Successfully initialised WeatherService with Config")
+
+    # Create cache directory if it doesn't exist and caching is enabled
+    if config.cache_config['enabled'] and not os.path.exists(config.cache_config['directory']):
+        os.makedirs(config.cache_config['directory'])
+        logger.info(f"Created cache directory: {config.cache_config['directory']}")
 except Exception as e:
-    logger.error(f"Failed to initialize OpenAI client: {str(e)}")
+    logger.error(f"Failed to initialise services: {str(e)}")
     raise
-
-def calculate_daily_averages(forecast, day_start_idx, day_end_idx):
-    """
-    Calculate daily averages from hourly forecast data.
-
-    Args:
-        forecast (dict): Forecast data containing hourly measurements
-        day_start_idx (int): Start index for the day's data
-        day_end_idx (int): End index for the day's data
-
-    Returns:
-        dict: Daily averages for various weather parameters
-    """
-    # Calculate daily averages and totals from hourly data
-    temp = sum(forecast.get("temperature", [0] * 24)[day_start_idx:day_end_idx]) / 24
-    wind_speed = sum(forecast.get("windspeed", [0] * 24)[day_start_idx:day_end_idx]) / 24
-    wind_direction = sum(forecast.get("winddirection", [0] * 24)[day_start_idx:day_end_idx]) / 24
-    precip = sum(forecast.get("precipitation", [0] * 24)[day_start_idx:day_end_idx])
-    snow = sum(forecast.get("snowfall", [0] * 24)[day_start_idx:day_end_idx])
-    relative_humidity = sum(forecast.get("relativehumidity", [0] * 24)[day_start_idx:day_end_idx]) / 24
-
-    # Handle pressure data
-    pressure_values = forecast.get("pressure", [0] * 24)[day_start_idx:day_end_idx]
-    if all(p == 0 for p in pressure_values):
-        # Use a default standard pressure if data is missing
-        pressure = 1013  # Standard atmospheric pressure in hPa
-    else:
-        # Filter out zero values before calculating average
-        valid_pressure = [p for p in pressure_values if p > 0]
-        pressure = sum(valid_pressure) / len(valid_pressure) if valid_pressure else 1013
-
-    cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[day_start_idx:day_end_idx]) / 24
-
-    return {
-        "temp": temp,
-        "wind_speed": wind_speed,
-        "wind_direction": wind_direction,
-        "precipitation": precip,
-        "snow": snow,
-        "relative_humidity": relative_humidity,
-        "pressure": pressure,
-        "cloud_cover": cloud_cover
-    }
-
-def get_future_weather_data(location, date):
-    base_url = "https://my.meteoblue.com/packages/basic-1h"
-    params = {
-        "apikey": METEOBLUE_API_KEY,
-        "lat": location["lat"],
-        "lon": location["lon"],
-        "asl": "0",
-        "format": "json",
-        "tz": "UTC"
-    }
-
-    success, response_data = handle_api_request(
-        base_url,
-        params,
-        "Meteoblue",
-        cache_type="weather",
-        cache_config=CACHE_CONFIG
-    )
-
-    if not success:
-        return f"Sorry, I couldn't retrieve the weather information at this time. {response_data}"
-
-    if "data_1h" not in response_data:
-        logger.warning("Missing data_1h in Meteoblue API response")
-        return "Sorry, I couldn't retrieve detailed weather information at this time."
-
-    forecast = response_data["data_1h"]
-
-    date_index = (date - datetime.now().date()).days
-    if 0 <= date_index <= 6:
-        day_start_idx = date_index * 24
-        day_end_idx = (date_index + 1) * 24
-
-        # Get daily averages
-        weather_data = calculate_daily_averages(forecast, day_start_idx, day_end_idx)
-
-        return format_weather_info(
-            location,
-            date,
-            weather_data["temp"],
-            weather_data["wind_speed"],
-            weather_data["wind_direction"],
-            weather_data["precipitation"],
-            weather_data["snow"],
-            weather_data["relative_humidity"],
-            weather_data["pressure"],
-            weather_data["cloud_cover"]
-        )
-    else:
-        return "Sorry, I can only provide weather information for today and the next 6 days."
-
-def get_historical_weather_data(location, date):
-    base_url = (f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{location['lat']},"
-                f"{location['lon']}/{date.strftime('%Y-%m-%d')}")
-    params = {
-        "unitGroup": "metric",
-        "key": VISUALCROSSING_API_KEY,
-        "contentType": "json",
-    }
-
-    success, response_data = handle_api_request(
-        base_url,
-        params,
-        "VisualCrossing",
-        cache_type="historical",
-        cache_config=CACHE_CONFIG
-    )
-
-    if not success:
-        return f"Sorry, I couldn't retrieve the historical weather information at this time. {response_data}"
-
-    try:
-        day_data = response_data['days'][0]
-
-        temp = day_data['temp']
-        wind_speed = day_data['windspeed']
-        wind_direction = day_data['winddir']
-        precip = day_data['precip']
-        snow = day_data['snow']
-        relative_humidity = day_data['humidity']
-        pressure = day_data['pressure']
-        cloud_cover = day_data['cloudcover']
-
-        return format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure, cloud_cover, is_historical=True)
-    except (KeyError, IndexError) as e:
-        error_msg = f"Missing data in VisualCrossing API response: {str(e)}"
-        logger.error(error_msg)
-        return "Sorry, I couldn't parse the historical weather information at this time."
-
-def format_weather_info(location, date, temp, wind_speed, wind_direction, precip, snow, relative_humidity, pressure,
-                        cloud_cover, is_historical=False):
-    # Define default values
-    default_values = {
-        "temp": 15.0,         # Default comfortable temperature
-        "wind_speed": 0.0,     # Default calm wind
-        "wind_direction": 0.0, # Default north
-        "precip": 0.0,         # Default no precipitation
-        "snow": 0.0,           # Default no snow
-        "relative_humidity": 50.0,  # Default moderate humidity
-        "pressure": 1013.0,    # Default standard pressure
-        "cloud_cover": 0.0,    # Default clear skies
-    }
-
-    # Better detection of missing or default data
-    is_default = {
-        "temp": temp is None or abs(temp) < 0.01,  # Allowing for floating point imprecision
-        "wind_speed": wind_speed is None or wind_speed < 0.01,
-        "wind_direction": wind_direction is None,
-        "precip": precip is None,  # None is considered default, 0 is a valid measurement
-        "snow": snow is None,      # None is considered default, 0 is a valid measurement
-        "relative_humidity": relative_humidity is None or relative_humidity < 0.01,
-        "pressure": pressure is None or abs(pressure - 1013.0) < 0.01,  # Close to standard pressure
-        "cloud_cover": cloud_cover is None,  # None is considered default, 0 is a valid measurement
-    }
-
-    # Set default values for missing data
-    if is_default["temp"]:
-        temp = default_values["temp"]
-    if is_default["wind_speed"]:
-        wind_speed = default_values["wind_speed"]
-    if is_default["wind_direction"]:
-        wind_direction = default_values["wind_direction"]
-    if is_default["precip"]:
-        precip = default_values["precip"]
-    if is_default["snow"]:
-        snow = default_values["snow"]
-    if is_default["relative_humidity"]:
-        relative_humidity = default_values["relative_humidity"]
-    if is_default["pressure"]:
-        pressure = default_values["pressure"]
-    if is_default["cloud_cover"]:
-        cloud_cover = default_values["cloud_cover"]
-
-    # Convert wind speed to knots (1 km/h ≈ 0.54 knots)
-    wind_speed_knots = wind_speed * 0.54
-
-    # Estimating fog/mist
-    fog_or_mist = "No fog/mist reported" if relative_humidity < 90 else "Possible fog/mist (FG/BR)"
-
-    # Enhanced weather condition determination
-    primary_condition = ""
-    condition_details = []
-
-    # Primary condition based on precipitation and clouds
-    if snow > 0:
-        if snow > 10:
-            primary_condition = "heavily snowing"
-        else:
-            primary_condition = "snowy"
-        condition_details.append("snow-covered")
-    elif precip > 0:
-        if precip > 15:
-            primary_condition = "stormy with heavy rain"
-        elif precip > 5:
-            primary_condition = "rainy"
-        else:
-            primary_condition = "drizzly"
-
-    elif relative_humidity > 90 and cloud_cover > 80:
-        primary_condition = "foggy"
-        condition_details.append("misty")
-    elif cloud_cover < 10:
-        primary_condition = "clear and sunny"
-        condition_details.append("bright")
-    elif cloud_cover < 30:
-        primary_condition = "mostly sunny"
-        condition_details.append("pleasant")
-    elif cloud_cover < 60:
-        primary_condition = "partly cloudy"
-    else:
-        primary_condition = "overcast"
-
-    # Wind descriptors
-    if wind_speed > 40:
-        condition_details.append("very windy")
-    elif wind_speed > 20:
-        condition_details.append("breezy")
-
-    # Temperature descriptors
-    if temp < -10:
-        condition_details.append("bitterly cold")
-    elif temp < 0:
-        condition_details.append("frosty")
-    elif temp < 10:
-        condition_details.append("chilly")
-    elif 15 <= temp <= 25:
-        condition_details.append("comfortable")
-    elif temp > 30:
-        condition_details.append("hot")
-    elif temp > 35:
-        condition_details.append("red-hot")
-
-    # Special combinations
-    if primary_condition == "clear and sunny" and temp > 25:
-        primary_condition = "brilliantly sunny"
-    if primary_condition == "overcast" and temp < 5:
-        primary_condition = "gloomy and cold"
-
-    # Pressure-based additions
-    if pressure > 1025 and cloud_cover < 30:
-        condition_details.append("with excellent visibility")
-
-    # Combine conditions into a rich description
-    if condition_details:
-        condition = f"{primary_condition}, {' and '.join(condition_details)}"
-    else:
-        condition = primary_condition
-
-    verb = "was" if is_historical else "is expected to be"
-
-    # Helper function to format value with default indicator
-    def format_value(value, is_default_value, format_str):
-        formatted = format_str.format(value)
-        indicator = "(default value)" if is_default_value else "(current value)"
-        return f"{formatted} {indicator}"
-
-    # Format date with weekday
-    formatted_date = f"{date.strftime('%A, %Y-%m-%d')}"
-
-    # Formatting the output
-    weather_info = f"""On {formatted_date}, the weather in {location['name']} {verb} {condition}. 
-    The average temperature {verb} {format_value(temp, is_default["temp"], "{:.2f}°C")}, with {format_value(precip, is_default["precip"], "{:.1f}mm")} of precipitation and average wind speeds 
-    of {format_value(wind_speed, is_default["wind_speed"], "{:.2f}km/h")}.
-
-- Average Temperature: {format_value(temp, is_default["temp"], "{:.2f}°C")}
-- Average Wind Speed: {format_value(wind_speed, is_default["wind_speed"], "{:.2f} km/h")}
-- Total Precipitation: {format_value(precip, is_default["precip"], "{:.1f} mm")}
-- Average Relative Humidity: {format_value(relative_humidity, is_default["relative_humidity"], "{:.0f}%")}
-- Average Cloud Cover: {format_value(cloud_cover, is_default["cloud_cover"], "{:.0f}%")}
-
-Weather information for our pilots:
-- Average Temperature: {format_value(temp, is_default["temp"], "{:.2f}°C")}
-- Wind: {format_value(wind_speed, is_default["wind_speed"], "{:.2f} km/h")} ({format_value(wind_speed_knots, is_default["wind_speed"], "{:.1f} knots")}) from {format_value(wind_direction, is_default["wind_direction"], "{:.0f}°")} (DD)
-- Precipitation (RA): {format_value(precip, is_default["precip"], "{:.1f} mm")}
-- Snow (SN): {format_value(snow, is_default["snow"], "{:.1f} mm")}
-- Average Relative Humidity (RH): {format_value(relative_humidity, is_default["relative_humidity"], "{:.0f}%")}
-- Average Barometric Pressure (QNH): {format_value(pressure, is_default["pressure"], "{:.0f} hPa")}
-- {fog_or_mist}
-- Freezing Level (FZ LVL): Information not available
-- Ceiling Height (CIG): Information not available"""
-
-    return weather_info
-
-def get_location_coordinates(location_name):
-    base_url = "https://api.opencagedata.com/geocode/v1/json"
-    params = {
-        "q": location_name,
-        "key": OPENCAGE_API_KEY,
-        "limit": 1
-    }
-
-    success, response_data = handle_api_request(
-        base_url,
-        params,
-        "OpenCage",
-        cache_type="coordinates",
-        cache_config=CACHE_CONFIG
-    )
-
-    if not success:
-        logger.error(f"Failed to get coordinates for location: {location_name}")
-        return None
-
-    if "results" in response_data and response_data["results"]:
-        result = response_data["results"][0]
-        return {
-            "lat": result["geometry"]["lat"],
-            "lon": result["geometry"]["lng"],
-            "name": result["formatted"]
-        }
-    else:
-        logger.warning(f"No results found for location: {location_name}")
-        return None
-
-def get_weather(location, date):
-    coordinates = get_location_coordinates(location)
-    if coordinates is None:
-        return (f"I'm sorry, but I don't have information for the location '{location}'. "
-                f"Could you please check the spelling or try asking about a different city?")
-
-    today = datetime.now().date()
-    if date < today:
-        weather_data = get_historical_weather_data(coordinates, date)
-    else:
-        weather_data = get_future_weather_data(coordinates, date)
-    return weather_data
-
-def get_optimal_flying_day(location):
-    """
-    Determines the optimal day for flying in the next 6 days based on weather conditions.
-
-    Parameters:
-    location (str): The name of the location to check weather for
-
-    Returns:
-    dict: Information about the optimal flying day with weather details
-    """
-    # Get coordinates for the location
-    coordinates = get_location_coordinates(location)
-    if coordinates is None:
-        return (f"I'm sorry, but I don't have information for the location '{location}'. Could you please check the "
-                f"spelling or try a different city?")
-
-    # Get weather data for the next 6 days
-    days_data = []
-    today = datetime.now().date()
-
-    logger.info(f"Analysing weather for {location} over the next 6 days...")
-
-    # Loop through the next 6 days to collect weather data
-    for day_offset in range(7):  # 0 = today, 1-6 = next six days
-        forecast_date = today + timedelta(days=day_offset)
-
-        # Get the weather data
-        base_url = "https://my.meteoblue.com/packages/basic-1h"
-        params = {
-            "apikey": METEOBLUE_API_KEY,
-            "lat": coordinates["lat"],
-            "lon": coordinates["lon"],
-            "asl": "0",
-            "format": "json",
-            "tz": "UTC"
-        }
-
-        success, response_data = handle_api_request(
-            base_url,
-            params,
-            "Meteoblue (flying day)",
-            cache_type="weather",
-            cache_config=CACHE_CONFIG
-        )
-
-        if not success:
-            logger.warning(f"Failed to get weather data for day {day_offset} ({forecast_date})")
-            continue
-
-        if "data_1h" not in response_data:
-            logger.warning(f"Missing data_1h in Meteoblue API response for day {day_offset}")
-            continue
-
-        forecast = response_data["data_1h"]
-
-        # Extract relevant data for the day
-        try:
-            day_start_idx = day_offset * 24
-            day_end_idx = (day_offset + 1) * 24
-
-            # Get daily averages
-            weather_data = calculate_daily_averages(forecast, day_start_idx, day_end_idx)
-
-            # Store the data in an array
-            days_data.append({
-                "date": forecast_date,
-                "temp": weather_data["temp"],
-                "wind_speed": weather_data["wind_speed"],
-                "wind_direction": weather_data["wind_direction"],
-                "precipitation": weather_data["precipitation"],
-                "snow": weather_data["snow"],
-                "humidity": weather_data["relative_humidity"],
-                "pressure": weather_data["pressure"],
-                "cloud_cover": weather_data["cloud_cover"],
-                "day_name": forecast_date.strftime('%A')
-            })
-
-            logger.info(f"Collected data for {forecast_date.strftime('%A, %Y-%m-%d')}")
-
-        except Exception as e:
-            logger.error(f"Error processing data for day {day_offset}: {str(e)}")
-
-    if not days_data:
-        return "I couldn't retrieve enough weather data to make a recommendation."
-
-    # Calculate the flying score for each day based on relevant criteria
-    # Using a dictionary to store scores with appropriate weighting
-    day_scores = []
-
-    for day_data in days_data:
-        # Initialise score
-        score = 100
-
-        # Dictionary to store conditions that affected the score
-        score_factors = {}
-
-        # Apply conditional scoring based on meteorological factors important for general aviation
-
-        # 1. Temperature - ideal range is 10-25°C
-        temp = day_data["temp"]
-        if temp < 5:
-            penalty = (5 - temp) * 3
-            score -= penalty
-            score_factors["temperature"] = f"Too cold ({temp:.1f}°C, -{penalty:.1f} points)"
-        elif temp > 30:
-            penalty = (temp - 30) * 2
-            score -= penalty
-            score_factors["temperature"] = f"Too hot ({temp:.1f}°C, -{penalty:.1f} points)"
-        else:
-            # Optimal temperature bonus
-            if 10 <= temp <= 25:
-                bonus = 5
-                score += bonus
-                score_factors["temperature"] = f"Ideal temperature ({temp:.1f}°C, +{bonus} points)"
-
-        # 2. Wind speed - ideal is below 15 km/h
-        wind = day_data["wind_speed"]
-        if wind < 5:
-            bonus = 10
-            score += bonus
-            score_factors["wind"] = f"Calm winds ({wind:.1f} km/h, +{bonus} points)"
-        elif wind < 15:
-            bonus = 5
-            score += bonus
-            score_factors["wind"] = f"Light winds ({wind:.1f} km/h, +{bonus} points)"
-        elif wind < 25:
-            penalty = (wind - 15) * 2
-            score -= penalty
-            score_factors["wind"] = f"Moderate winds ({wind:.1f} km/h, -{penalty:.1f} points)"
-        else:
-            penalty = 20 + (wind - 25) * 3
-            score -= penalty
-            score_factors["wind"] = f"Strong winds ({wind:.1f} km/h, -{penalty:.1f} points)"
-
-        # 3. Precipitation - ideally none
-        precip = day_data["precipitation"]
-        if precip == 0:
-            bonus = 15
-            score += bonus
-            score_factors["precipitation"] = f"No rain (0.0 mm, +{bonus} points)"
-        elif precip < 2:
-            penalty = precip * 10
-            score -= penalty
-            score_factors["precipitation"] = f"Light rain ({precip:.1f} mm, -{penalty:.1f} points)"
-        else:
-            penalty = 20 + (precip - 2) * 5
-            score -= penalty
-            score_factors["precipitation"] = f"Significant rain ({precip:.1f} mm, -{penalty:.1f} points)"
-
-        # 4. Snow - any snow is bad for flying
-        snow = day_data["snow"]
-        if snow > 0:
-            penalty = 50 + snow * 10
-            score -= penalty
-            score_factors["snow"] = f"Snowfall detected ({snow:.1f} mm, -{penalty:.1f} points)"
-
-        # 5. Cloud cover - clearer is better
-        clouds = day_data["cloud_cover"]
-        if clouds < 20:
-            bonus = 15
-            score += bonus
-            score_factors["clouds"] = f"Clear skies ({clouds:.0f}% cloud cover, +{bonus} points)"
-        elif clouds < 40:
-            bonus = 10
-            score += bonus
-            score_factors["clouds"] = f"Few clouds ({clouds:.0f}% cloud cover, +{bonus} points)"
-        elif clouds < 70:
-            penalty = (clouds - 40) / 3
-            score -= penalty
-            score_factors["clouds"] = f"Partly cloudy ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
-        else:
-            penalty = 10 + (clouds - 70) / 3
-            score -= penalty
-            score_factors["clouds"] = f"Overcast ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
-
-        # 6. Humidity - lower is better for visibility
-        humidity = day_data["humidity"]
-        if humidity > 90:
-            penalty = (humidity - 90) * 2
-            score -= penalty
-            score_factors["humidity"] = f"Very humid ({humidity:.0f}%, -{penalty:.1f} points)"
-        elif humidity > 70:
-            penalty = (humidity - 70) / 2
-            score -= penalty
-            score_factors["humidity"] = f"Humid ({humidity:.0f}%, -{penalty:.1f} points)"
-
-        # 7. Pressure - stable high pressure is best
-        pressure = day_data["pressure"]
-        if pressure > 1020:
-            bonus = 5
-            score += bonus
-            score_factors["pressure"] = f"High pressure ({pressure:.0f} hPa, +{bonus} points)"
-        elif pressure < 1000:
-            # Cap the penalty to avoid extreme values
-            penalty = min((1000 - pressure) / 2, 20)
-            score -= penalty
-            score_factors["pressure"] = f"Low pressure ({pressure:.0f} hPa, -{penalty:.1f} points)"
-        else:
-            # Standard pressure is good for flying
-            bonus = 2
-            score += bonus
-            score_factors["pressure"] = f"Stable pressure ({pressure:.0f} hPa, +{bonus} points)"
-
-        # Ensure score doesn't go below 0
-        score = max(0, score)
-
-        # Add to array of day scores
-        day_scores.append({
-            "date": day_data["date"],
-            "day_name": day_data["day_name"],
-            "score": score,
-            "factors": score_factors,
-            "weather_data": day_data
-        })
-
-    # Sort days by score (highest first)
-    day_scores.sort(key=lambda x: x["score"], reverse=True)
-
-    # Get the best day
-    best_day = day_scores[0]
-
-    # Format the result
-    result = {
-        "location": coordinates["name"],
-        "best_day": {
-            "date": best_day["date"].strftime('%Y-%m-%d'),
-            "day_name": best_day["day_name"],
-            "score": best_day["score"],
-            "factors": best_day["factors"],
-            "weather": best_day["weather_data"]
-        },
-        "all_days": day_scores
-    }
-
-    return result
 
 def format_optimal_flying_day_response(flying_data):
     """
     Formats the suitable flying day data into a readable response.
     """
-    # Check if we have an error message instead of data
+    # Check if there is an error message instead of data
     if isinstance(flying_data, str):
         return flying_data
 
@@ -821,11 +232,12 @@ def handle_flying_day_request(query):
 
         if message.function_call:
             function_args = json.loads(message.function_call.arguments)
-            location = function_args.get("location", "Berlin")
+            # Use the default location from config if none provided
+            location = function_args.get("location", config.get("DEFAULT_LOCATION", "Berlin"))
             logger.info(f"Extracted location from query: {location}")
 
             # Get and format the optimal flying day information
-            flying_data = get_optimal_flying_day(location)
+            flying_data = weather_service.get_optimal_flying_day(location)
             return format_optimal_flying_day_response(flying_data)
         else:
             logger.warning("No function call in OpenAI response")
@@ -835,6 +247,15 @@ def handle_flying_day_request(query):
         return "I'm sorry, I encountered an error while processing your request. Please try again."
 
 def handle_conversation(query):
+    """
+    Handle a user query by determining if it's a weather question or general conversation.
+
+    Args:
+        query (str): The user's input
+
+    Returns:
+        str: Response to the user
+    """
     functions = [
         {
             "name": "get_weather",
@@ -865,7 +286,7 @@ def handle_conversation(query):
                                               "provide weather information when asked. You can provide historical weather "
                                               "data for past dates, current weather, and forecasts for up to 6 days in the "
                                               "future. If the user doesn't specify a location or date for weather, assume "
-                                              "they're asking about Berlin for today."},
+                                              "they're asking about the default location for today."},
                 {"role": "user", "content": query}
             ],
             functions=functions,
@@ -880,24 +301,14 @@ def handle_conversation(query):
             logger.info(f"Function call: {function_name} with args: {function_args}")
 
             if function_name == "get_weather":
-                location = function_args.get("location", "Berlin")
+                # Use the default location from config if none provided
+                location = function_args.get("location", config.get("DEFAULT_LOCATION", "Berlin"))
                 date_string = function_args.get("date", "today")
 
                 try:
-                    date = parse_date(date_string)
-                    today = datetime.now().date()
-
-                    if (date - today).days > 6:
-                        logger.warning(f"Date out of range: {date}")
-                        return (f"I'm sorry, but I can only provide weather for the past, today and up to 6 days "
-                                f"in the future. The date you asked about ({date.strftime('%Y-%m-%d')}) is too far "
-                                f"in the future. The latest date I can provide a forecast for is "
-                                f"{(today + timedelta(days=6)).strftime('%Y-%m-%d')}. Would you like to know the "
-                                f"weather for {location} on that date instead?")
-
-                    weather_info = get_weather(location, date)
+                    # Use the WeatherService to get weather data
+                    weather_info = weather_service.get_weather(location, date_string)
                     return weather_info
-
                 except ValueError as e:
                     logger.error(f"Date parsing error: {str(e)}")
                     return f"I am happy to tell you the weather, if you give me a date and location. And I'm sorry, I couldn't understand this date. {str(e)}"
@@ -914,6 +325,7 @@ def handle_conversation(query):
         return "I'm sorry, I encountered an error while processing your request. Please try again."
 
 def main():
+    """Main function to run the weather chatbot."""
     logger.info("Starting Weather Chatbot with flight weather analyser")
     print("Welcome to our Weather Chatbot with flight weather analyser initialised by Sasha & Fabian & Fabio.")
     print("You can ask about the weather for any location in the world, for past dates, today, and up to 6 days in the future.")
@@ -921,8 +333,8 @@ def main():
     print("Type 'exit' to quit the chatbot.")
 
     flying_mode = False  # Track if we're in flying analysis mode
-    default_location = "Markt Nordheim"
     flying_keywords = ["fly", "flying", "flight", "optimal", "best day", "pilot"]
+    default_location = config.get("DEFAULT_LOCATION", "Berlin")  # Get default location from config
 
     while True:
         user_input = input("\nYou: ").strip()
