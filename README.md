@@ -300,7 +300,7 @@ This project is licensed under the MIT License.
 
 ## 🙏 Acknowledgments
 
-- Warm thanks to Sasha and Fabian for providing the original task and Fabio for the inspirations and guidance.
+- Warm thanks to Sasha & Fabian for providing the original task and Fabio & Sam for the inspirations and guidance.
 - OpenAI for providing the GPT model
 - Meteoblue for weather forecast data
 - OpenCage for geocoding services
