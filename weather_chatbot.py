@@ -1,8 +1,12 @@
 import json
 import os
+import time
+import sys
 from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
+import colorama
+from colorama import Fore, Back, Style
 
 # Import utility functions from the utils module
 from utils import (
@@ -19,11 +23,53 @@ from weather_service import (
     ApiRequestException
 )
 
+# Initialise colorama
+colorama.init(autoreset=True)
+
 # Load environment variables
 load_dotenv()
 
 # Initialise configuration
 config = Config()
+
+# ASCII art for weather conditions
+WEATHER_ASCII = {
+    "sunny": [
+        "    \\   /    ",
+        "     .-.     ",
+        "  ― (   ) ―  ",
+        "     `-'     ",
+        "    /   \\    "
+    ],
+    "cloudy": [
+        "             ",
+        "     .--.    ",
+        "  .-(    ).  ",
+        " (___.__)__) ",
+        "             "
+    ],
+    "rainy": [
+        "     .-.     ",
+        "    (   ).   ",
+        "   (___(__)  ",
+        "  ʻ‚ʻ‚ʻ‚ʻ‚   ",
+        "  ‚ʻ‚ʻ‚ʻ‚    "
+    ],
+    "snowy": [
+        "     .-.     ",
+        "    (   ).   ",
+        "   (___(__)  ",
+        "   * * * *   ",
+        "  * * * *    "
+    ],
+    "windy": [
+        "    _,,,_    ",
+        "   /     \\   ",
+        "  (  ~~~~ )  ",
+        "   \\     /   ",
+        "    ~~~~~    "
+    ]
+}
 
 try:
     # Initialise OpenAI API
@@ -42,13 +88,49 @@ except Exception as e:
     logger.error(f"Failed to initialise services: {str(e)}")
     raise
 
+def display_loading_indicator(message="Processing"):
+    """Display an animated loading indicator."""
+    indicators = ['|', '/', '-', '\\']
+    i = 0
+    sys.stdout.write(Fore.CYAN + message + " ")
+    for _ in range(5):  # Shorter animation to avoid long waits
+        sys.stdout.write(indicators[i % len(indicators)] + "\r" + message + " ")
+        sys.stdout.flush()
+        time.sleep(0.2)
+        i += 1
+    sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
+    sys.stdout.flush()
+
+def display_weather_ascii(condition):
+    """Display ASCII art representing weather conditions."""
+    condition = condition.lower() if condition else ""
+
+    if "sun" in condition or "clear" in condition:
+        art = WEATHER_ASCII["sunny"]
+    elif "cloud" in condition:
+        art = WEATHER_ASCII["cloudy"]
+    elif "rain" in condition or "shower" in condition:
+        art = WEATHER_ASCII["rainy"]
+    elif "snow" in condition:
+        art = WEATHER_ASCII["snowy"]
+    elif "wind" in condition:
+        art = WEATHER_ASCII["windy"]
+    else:
+        # Default to cloudy if condition not recognised
+        art = WEATHER_ASCII["cloudy"]
+
+    print(Fore.YELLOW + "\nWeather condition:")
+    for line in art:
+        print(Fore.YELLOW + line)
+    print()
+
 def format_optimal_flying_day_response(flying_data):
     """
-    Formats the suitable flying day data into a readable response.
+    Formats the suitable flying day data into a readable response with colours.
     """
     # Check if there is an error message instead of data
     if isinstance(flying_data, str):
-        return flying_data
+        return Fore.RED + flying_data
 
     location = flying_data["location"]
     best_day = flying_data["best_day"]
@@ -58,7 +140,7 @@ def format_optimal_flying_day_response(flying_data):
     base_score = 100
 
     # Format the best day information
-    response = f"🛫 **OPTIMAL FLYING DAY FOR {location.upper()}** 🛫\n\n"
+    response = Fore.CYAN + Style.BRIGHT + f"🛫 OPTIMAL FLYING DAY FOR {location.upper()} 🛫\n\n" + Style.RESET_ALL
 
     # Process all days
     for day in all_days:
@@ -107,11 +189,11 @@ def format_optimal_flying_day_response(flying_data):
         best_net = best_score - base_score
 
     if best_net >= 0:
-        response += f"The best day for flying in the next week is **{best_day['day_name']}, {best_day['date']}** "
-        response += f"with a flying condition score of {best_score} (base:100 + {best_net} bonus).\n\n"
+        response += Fore.GREEN + f"The best day for flying in the next week is " + Style.BRIGHT + f"{best_day['day_name']}, {best_day['date']}" + Style.RESET_ALL
+        response += Fore.GREEN + f" with a flying condition score of {best_score} (base:100 + {best_net} bonus).\n\n" + Style.RESET_ALL
     else:
-        response += f"The best day for flying in the next week is **{best_day['day_name']}, {best_day['date']}** "
-        response += f"with a flying condition score of {best_score} (base:100 - {abs(best_net)} penalty).\n\n"
+        response += Fore.YELLOW + f"The best day for flying in the next week is " + Style.BRIGHT + f"{best_day['day_name']}, {best_day['date']}" + Style.RESET_ALL
+        response += Fore.YELLOW + f" with a flying condition score of {best_score} (base:100 - {abs(best_net)} penalty).\n\n" + Style.RESET_ALL
 
     # Helper function to format value with default indicator
     def format_value(value, property_name, format_str):
@@ -141,10 +223,10 @@ def format_optimal_flying_day_response(flying_data):
                 is_default = value is None or abs(value - default_value) < 0.01
 
         formatted = format_str.format(value)
-        indicator = "(default value)" if is_default else "(current value)"
+        indicator = Fore.YELLOW + "(default value)" if is_default else Fore.CYAN + "(current value)"
         return f"{formatted} {indicator}"
 
-    response += "**Weather conditions:**\n"
+    response += Fore.BLUE + Style.BRIGHT + "Weather conditions:\n" + Style.RESET_ALL
     weather = best_day["weather"]
     response += f"- Temperature: {format_value(weather['temp'], 'temp', '{:.1f}°C')}\n"
     response += f"- Wind: {format_value(weather['wind_speed'], 'wind_speed', '{:.1f} km/h')} from {format_value(weather['wind_direction'], 'wind_direction', '{:.0f}°')}\n"
@@ -153,11 +235,11 @@ def format_optimal_flying_day_response(flying_data):
     response += f"- Humidity: {format_value(weather['humidity'], 'humidity', '{:.0f}%')}\n"
     response += f"- Pressure: {format_value(weather['pressure'], 'pressure', '{:.0f} hPa')}\n\n"
 
-    response += "**Analysis factors:**\n"
+    response += Fore.GREEN + Style.BRIGHT + "Analysis factors:\n" + Style.RESET_ALL
     for factor, description in best_day["factors"].items():
         response += f"- {description}\n"
 
-    response += "\n**All days ranked:**\n"
+    response += Fore.CYAN + Style.BRIGHT + "\nAll days ranked:\n" + Style.RESET_ALL
 
     # Sort days by recalculated score
     sorted_days = sorted([d for d in all_days if d is not best_day_data],
@@ -167,25 +249,37 @@ def format_optimal_flying_day_response(flying_data):
         score = day["display_score"]
         net = day["display_net"]
 
-        if day['date'] == best_day['date']:
-            # This is the best day, so include a marker
-            display_date = f"**{day['day_name']}, {day['date']}**"
+        # Choose colour based on score
+        if score >= 80:
+            day_color = Fore.GREEN
+        elif score >= 60:
+            day_color = Fore.YELLOW
         else:
-            display_date = f"{day['day_name']}, {day['date'].strftime('%Y-%m-%d')}"
+            day_color = Fore.RED
+
+        if day['date'] == best_day['date']:
+            # This is the best day, so include a marker and make it bold
+            display_date = Style.BRIGHT + f"{day['day_name']}, {day['date']}" + Style.RESET_ALL
+        else:
+            display_date = f"{day['day_name']}, {day['date']}"
 
         if net >= 0:
-            response += f"{i}. {display_date} - Score: {score} (base:100 + {net} bonus)\n"
+            response += day_color + f"{i}. {display_date} - Score: {score} (base:100 + {net} bonus)\n"
         else:
-            response += f"{i}. {display_date} - Score: {score} (base:100 - {abs(net)} penalty)\n"
+            response += day_color + f"{i}. {display_date} - Score: {score} (base:100 - {abs(net)} penalty)\n"
 
         # Add factors
         if day["bonus_factors"]:
             bonus_str = ", ".join([f"{name}: +{value}" for name, value in day["bonus_factors"]])
-            response += f"   Positive factors: {bonus_str}\n"
+            response += Fore.GREEN + f"   Positive factors: {bonus_str}\n" + Style.RESET_ALL
         if day["penalty_factors"]:
             penalty_str = ", ".join([f"{name}: -{value}" for name, value in day["penalty_factors"]])
-            response += f"   Challenging factors: {penalty_str}\n"
+            response += Fore.YELLOW + f"   Challenging factors: {penalty_str}\n" + Style.RESET_ALL
         response += "\n"
+
+    # Add ASCII art for best day's weather condition if available
+    if "condition" in best_day["weather"]:
+        display_weather_ascii(best_day["weather"]["condition"])
 
     return response
 
@@ -199,6 +293,9 @@ def handle_flying_day_request(query):
     Returns:
     str: A response about the optimal flying day
     """
+    # Show loading indicator
+    display_loading_indicator("Analysing flying conditions")
+
     # Extract location from query using OpenAI
     functions = [
         {
@@ -241,10 +338,10 @@ def handle_flying_day_request(query):
             return format_optimal_flying_day_response(flying_data)
         else:
             logger.warning("No function call in OpenAI response")
-            return "I need a location to check for optimal flying conditions. Please specify a city or area."
+            return Fore.YELLOW + "I need a location to check for optimal flying conditions. Please specify a city or area."
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error in OpenAI response: {str(e)}")
-        return "I encountered an error processing the location information. Please try again with a clearer location."
+        return Fore.RED + "I encountered an error processing the location information. Please try again with a clearer location."
     except Exception as e:
         # Log the specific error for debugging
         error_type = type(e).__name__
@@ -253,14 +350,14 @@ def handle_flying_day_request(query):
 
         # Provide error message based on error type
         if "RateLimitError" in error_type:
-            return "I'm currently experiencing high demand. Please try again in a moment."
+            return Fore.RED + "I'm currently experiencing high demand. Please try again in a moment."
         elif "AuthenticationError" in error_type:
-            return "I'm having trouble with my authentication system. Please report this issue to the administrator."
+            return Fore.RED + "I'm having trouble with my authentication system. Please report this issue to the administrator."
         elif "APIConnectionError" in error_type or "APITimeoutError" in error_type:
-            return "I'm having trouble connecting to my knowledge system. Please check your internet connection and try again."
+            return Fore.RED + "I'm having trouble connecting to my knowledge system. Please check your internet connection and try again."
         else:
             # Generic message for other errors
-            return "I encountered an unexpected error while processing your request. Please try again."
+            return Fore.RED + "I encountered an unexpected error while processing your request. Please try again."
 
 def handle_conversation(query):
     """
@@ -272,6 +369,9 @@ def handle_conversation(query):
     Returns:
         str: Response to the user
     """
+    # Show loading indicator
+    display_loading_indicator("Processing your question")
+
     functions = [
         {
             "name": "get_weather",
@@ -324,13 +424,41 @@ def handle_conversation(query):
                 try:
                     # Use the WeatherService to get weather data
                     weather_info = weather_service.get_weather(location, date_string)
-                    return weather_info
+
+                    # Add colours to the weather info
+                    colorised_info = Fore.CYAN + Style.BRIGHT + f"Weather for {location}" + Style.RESET_ALL + "\n"
+                    for line in weather_info.split('\n'):
+                        if "Temperature:" in line:
+                            temp_parts = line.split(': ')
+                            if len(temp_parts) > 1:
+                                temp = float(temp_parts[1].replace('°C', '').strip())
+                                if temp < 5:
+                                    colorised_info += Fore.BLUE + line + "\n"
+                                elif temp > 30:
+                                    colorised_info += Fore.RED + line + "\n"
+                                else:
+                                    colorised_info += Fore.WHITE + line + "\n"
+                            else:
+                                colorised_info += line + "\n"
+                        elif "Condition:" in line:
+                            colorised_info += Fore.YELLOW + line + "\n"
+                            # Try to extract condition for ASCII art
+                            condition = line.split(': ')[1] if len(line.split(': ')) > 1 else ""
+                            display_weather_ascii(condition)
+                        elif "Wind:" in line:
+                            colorised_info += Fore.CYAN + line + "\n"
+                        elif "Warning:" in line:
+                            colorised_info += Fore.RED + Style.BRIGHT + line + "\n" + Style.RESET_ALL
+                        else:
+                            colorised_info += line + "\n"
+
+                    return colorised_info
                 except ValueError as e:
                     logger.error(f"Date parsing error: {str(e)}")
-                    return f"I am happy to tell you the weather, if you give me a date and location. And I'm sorry, I couldn't understand this date. {str(e)}"
+                    return Fore.YELLOW + f"I am happy to tell you the weather, if you give me a date and location. And I'm sorry, I couldn't understand this date. {str(e)}"
             else:
                 logger.warning(f"Unknown function call: {function_name}")
-                return "I'm sorry, I don't know how to handle that request."
+                return Fore.RED + "I'm sorry, I don't know how to handle that request."
         else:
             # If no function was called, it means the query wasn't about weather
             logger.info("No function call - regular conversation")
@@ -338,7 +466,7 @@ def handle_conversation(query):
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error in OpenAI response: {str(e)}")
-        return "I encountered an error understanding your question. Could you please rephrase it?"
+        return Fore.RED + "I encountered an error understanding your question. Could you please rephrase it?"
     except Exception as e:
         # Log error type and message for debugging
         error_type = type(e).__name__
@@ -347,47 +475,87 @@ def handle_conversation(query):
 
         # Provide responses based on error type
         if "RateLimitError" in error_type:
-            return "I'm currently experiencing high demand. Please try again in a moment."
+            return Fore.RED + "I'm currently experiencing high demand. Please try again in a moment."
         elif "AuthenticationError" in error_type:
-            return "I'm having trouble with my authentication system. Please report this issue to the administrator."
+            return Fore.RED + "I'm having trouble with my authentication system. Please report this issue to the administrator."
         elif "APIConnectionError" in error_type or "APITimeoutError" in error_type:
-            return "I'm having trouble connecting to my knowledge system. Please check your internet connection and try again."
+            return Fore.RED + "I'm having trouble connecting to my knowledge system. Please check your internet connection and try again."
         else:
             # Generic message for other errors
-            return "I'm sorry, I encountered an error while processing your request. Please try again."
+            return Fore.RED + "I'm sorry, I encountered an error while processing your request. Please try again."
+
+def display_welcome_message():
+    """Display a styled welcome message."""
+    print(Fore.CYAN + Style.BRIGHT + "=" * 80)
+    print(Fore.YELLOW + Style.BRIGHT + """
+    __          __        _   _               
+    \\ \\        / /       | | | |              
+     \\ \\  /\\  / /__  __ _| |_| |__   ___ _ __ 
+      \\ \\/  \\/ / _ \\/ _` | __| '_ \\ / _ \\ '__|
+       \\  /\\  /  __/ (_| | |_| | | |  __/ |   
+        \\/  \\/ \\___|\\__,_|\\__|_| |_|\\___|_|   
+                                               
+     ____ _           _   _           _   
+    / ___| |__   __ _| |_| |__   ___ | |_ 
+   | |   | '_ \\ / _` | __| '_ \\ / _ \\| __|
+   | |___| | | | (_| | |_| |_) | (_) | |_ 
+    \\____|_| |_|\\__,_|\\__|_.__/ \\___/ \\__|
+                                           
+    """)
+    print(Fore.CYAN + Style.BRIGHT + "=" * 80)
+    print(Fore.WHITE + "Welcome to our Weather Chatbot with flight weather analyser")
+    print(Fore.WHITE + "initialised by Sasha & Fabian. Supported by Fabio & Sam.")
+    print(Fore.CYAN + Style.BRIGHT + "=" * 80 + "\n")
+
+    # Show disclaimer
+    print(Fore.RED + Style.BRIGHT + "DISCLAIMER:" + Style.RESET_ALL)
+    print(Fore.YELLOW + "This is a proof-of-concept application intended for educational purposes only.")
+    print("It should NOT be used for critical decision-making or safety-related activities.")
+    print("Always consult official weather services for important decisions." + Style.RESET_ALL)
+    print(Fore.CYAN + "=" * 80 + "\n")
+
+    # Show usage information
+    print(Fore.GREEN + Style.BRIGHT + f"Default location set to: {config.default_location}" + Style.RESET_ALL)
+    print(Fore.WHITE + "You can ask about the weather for any location in the world, for past dates, today, and up to 6 days in the future.")
+    print(Fore.WHITE + "You can also ask for the appropriate day for flying in any location!")
+
+    # Show example queries
+    print(Fore.GREEN + Style.BRIGHT + "\nExample queries:" + Style.RESET_ALL)
+    print(Fore.WHITE + "- What's the weather like in Berlin tomorrow?")
+    print(Fore.WHITE + "- How was the weather in Paris last Monday?")
+    print(Fore.WHITE + "- What's the best day to fly in Munich this week?")
+    print(Fore.WHITE + "- Type 'exit' to quit the chatbot.\n")
 
 def main():
     """Main function to run the weather chatbot."""
     logger.info("Starting Weather Chatbot with flight weather analyser")
-    print("Welcome to our Weather Chatbot with flight weather analyser initialised by Sasha & Fabian & Fabio.")
-    print(f"Default location set to: {config.default_location}")
-    print("You can ask about the weather for any location in the world, for past dates, today, and up to 6 days in the future.")
-    print("You can also ask for the appropriate day for flying in any location!")
-    print("Type 'exit' to quit the chatbot.")
 
-    flying_mode = False  # Track if we're in flying analysis mode
+    # Display welcome message with colours
+    display_welcome_message()
+
+    flying_mode = False  # Track if in flying analysis mode
     flying_keywords = ["fly", "flying", "flight", "optimal", "best day", "pilot"]
 
     while True:
-        user_input = input("\nYou: ").strip()
+        user_input = input(Fore.GREEN + "You: " + Style.RESET_ALL).strip()
         if user_input.lower() == 'exit':
             logger.info("User exited the application")
-            print("Goodbye!")
+            print(Fore.CYAN + "Goodbye!" + Style.RESET_ALL)
             break
 
         try:
-            # Check if we're in flying mode waiting for a location
+            # Check if in flying mode waiting for a location
             if flying_mode and not any(keyword in user_input.lower() for keyword in flying_keywords):
                 # User is providing just a location after being asked
                 logger.info(f"Processing location for flying day: {user_input}")
                 try:
                     response = handle_flying_day_request(f"What is the best day to fly in {user_input}?")
                     flying_mode = False  # Reset flying mode after handling
-                    print(f"Chatbot: {response}")
+                    print(Fore.BLUE + "Weather Bot: " + Style.RESET_ALL + response + "\n")
                 except Exception as e:
                     flying_mode = False  # Reset flying mode on error
                     logger.error(f"Error processing flying location '{user_input}': {str(e)}")
-                    print(f"Chatbot: I'm sorry, I couldn't process that location. Please try a different city name.")
+                    print(Fore.RED + f"Weather Bot: I'm sorry, I couldn't process that location. Please try a different city name.")
                 continue  # Skip the rest of the loop to avoid double processing
 
             # Check if this is a new flying day request
@@ -404,7 +572,7 @@ def main():
 
                 if not location_specified:
                     logger.info("No location specified for flying day request")
-                    print(f"Chatbot: I need a location to check for optimal flying conditions. Please specify a city or area.")
+                    print(Fore.YELLOW + f"Weather Bot: I need a location to check for optimal flying conditions. Please specify a city or area.")
                     flying_mode = True
                     continue
                 else:
@@ -414,18 +582,18 @@ def main():
                     except Exception as e:
                         flying_mode = False  # Reset flying mode on error
                         logger.error(f"Error processing flying request: {str(e)}")
-                        response = "I'm sorry, I couldn't process your flying request. Is the location you provided a valid city name?"
+                        response = Fore.RED + "I'm sorry, I couldn't process your flying request. Is the location you provided a valid city name?"
             else:
                 logger.info("Processing general conversation query")
                 response = handle_conversation(user_input)
                 flying_mode = False  # Ensure app is not in flying mode
 
-            print(f"Chatbot: {response}")
+            print(Fore.BLUE + "Weather Bot: " + Style.RESET_ALL + response + "\n")
         except Exception as e:
             # Catch-all error handler - always reset flying mode
             flying_mode = False
             logger.error(f"Error in main loop: {str(e)}")
-            print(f"Chatbot: I'm sorry, I encountered an error: {str(e)}")
+            print(Fore.RED + f"Weather Bot: I'm sorry, I encountered an error: {str(e)}")
 
 if __name__ == "__main__":
     main()
