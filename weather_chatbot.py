@@ -68,6 +68,27 @@ WEATHER_ASCII = {
         "  (  ~~~~ )  ",
         "   \\     /   ",
         "    ~~~~~    "
+    ],
+    "stormy": [
+        "     .-.     ",
+        "    (   ).   ",
+        "   (___(__)  ",
+        "  ⚡⚡⚡⚡    ",
+        "  ⚡⚡⚡     "
+    ],
+    "foggy": [
+        "             ",
+        " --- --- --- ",
+        " --- --- --- ",
+        " --- --- --- ",
+        "             "
+    ],
+    "default": [
+        "             ",
+        "     ?       ",
+        "    ???      ",
+        "     ?       ",
+        "             "
     ]
 }
 
@@ -101,28 +122,34 @@ def display_loading_indicator(message="Processing"):
     sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
     sys.stdout.flush()
 
-def display_weather_ascii(condition):
-    """Display ASCII art representing weather conditions."""
+def get_weather_ascii(condition):
+    """Get ASCII art representing weather conditions."""
     condition = condition.lower() if condition else ""
 
     if "sun" in condition or "clear" in condition:
-        art = WEATHER_ASCII["sunny"]
+        return WEATHER_ASCII["sunny"]
     elif "cloud" in condition:
-        art = WEATHER_ASCII["cloudy"]
+        return WEATHER_ASCII["cloudy"]
     elif "rain" in condition or "shower" in condition:
-        art = WEATHER_ASCII["rainy"]
+        return WEATHER_ASCII["rainy"]
     elif "snow" in condition:
-        art = WEATHER_ASCII["snowy"]
+        return WEATHER_ASCII["snowy"]
     elif "wind" in condition:
-        art = WEATHER_ASCII["windy"]
+        return WEATHER_ASCII["windy"]
+    elif "storm" in condition or "thunder" in condition:
+        return WEATHER_ASCII["stormy"]
+    elif "fog" in condition or "mist" in condition:
+        return WEATHER_ASCII["foggy"]
     else:
         # Default to cloudy if condition not recognised
-        art = WEATHER_ASCII["cloudy"]
+        return WEATHER_ASCII["cloudy"]
 
-    print(Fore.YELLOW + "\nWeather condition:")
+def format_weather_ascii(art, color=Fore.YELLOW):
+    """Format ASCII art into a string with color."""
+    result = color + "\nWeather condition:\n"
     for line in art:
-        print(Fore.YELLOW + line)
-    print()
+        result += color + line + "\n"
+    return result
 
 def format_optimal_flying_day_response(flying_data):
     """
@@ -278,8 +305,26 @@ def format_optimal_flying_day_response(flying_data):
         response += "\n"
 
     # Add ASCII art for best day's weather condition if available
-    if "condition" in best_day["weather"]:
-        display_weather_ascii(best_day["weather"]["condition"])
+    weather_condition = best_day["weather"].get("condition", "")
+    if not weather_condition and "cloud_cover" in best_day["weather"]:
+        # Determine condition based on weather properties
+        cloud_cover = best_day["weather"]["cloud_cover"]
+        precipitation = best_day["weather"].get("precipitation", 0)
+        snow = best_day["weather"].get("snow", 0)
+
+        if snow > 0:
+            weather_condition = "snowy"
+        elif precipitation > 5:
+            weather_condition = "rainy"
+        elif cloud_cover < 30:
+            weather_condition = "sunny"
+        elif cloud_cover < 70:
+            weather_condition = "partly cloudy"
+        else:
+            weather_condition = "cloudy"
+
+    weather_art = get_weather_ascii(weather_condition)
+    response += format_weather_ascii(weather_art)
 
     return response
 
@@ -425,6 +470,17 @@ def handle_conversation(query):
                     # Use the WeatherService to get weather data
                     weather_info = weather_service.get_weather(location, date_string)
 
+                    # Extract the condition for ASCII art
+                    condition = None
+                    for line in weather_info.split('\n'):
+                        if "Condition:" in line:
+                            condition = line.split(': ')[1] if len(line.split(': ')) > 1 else ""
+                            break
+
+                    # Get the ASCII art
+                    weather_art = get_weather_ascii(condition)
+                    ascii_art = format_weather_ascii(weather_art)
+
                     # Add colours to the weather info
                     colorised_info = Fore.CYAN + Style.BRIGHT + f"Weather for {location}" + Style.RESET_ALL + "\n"
                     for line in weather_info.split('\n'):
@@ -442,15 +498,15 @@ def handle_conversation(query):
                                 colorised_info += line + "\n"
                         elif "Condition:" in line:
                             colorised_info += Fore.YELLOW + line + "\n"
-                            # Try to extract condition for ASCII art
-                            condition = line.split(': ')[1] if len(line.split(': ')) > 1 else ""
-                            display_weather_ascii(condition)
                         elif "Wind:" in line:
                             colorised_info += Fore.CYAN + line + "\n"
                         elif "Warning:" in line:
                             colorised_info += Fore.RED + Style.BRIGHT + line + "\n" + Style.RESET_ALL
                         else:
                             colorised_info += line + "\n"
+
+                    # Append the ASCII art to the response
+                    colorised_info += ascii_art
 
                     return colorised_info
                 except ValueError as e:
