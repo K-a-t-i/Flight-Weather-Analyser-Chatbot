@@ -23,6 +23,9 @@ from weather_service import (
     ApiRequestException
 )
 
+# Import the display manager
+from display_manager import WeatherDisplayManager
+
 # Initialise colorama
 colorama.init(autoreset=True)
 
@@ -32,65 +35,8 @@ load_dotenv()
 # Initialise configuration
 config = Config()
 
-# ASCII art for weather conditions
-WEATHER_ASCII = {
-    "sunny": [
-        "    \\   /    ",
-        "     .-.     ",
-        "  ― (   ) ―  ",
-        "     `-'     ",
-        "    /   \\    "
-    ],
-    "cloudy": [
-        "             ",
-        "     .--.    ",
-        "  .-(    ).  ",
-        " (___.__)__) ",
-        "             "
-    ],
-    "rainy": [
-        "     .-.     ",
-        "    (   ).   ",
-        "   (___(__)  ",
-        "  ʻ‚ʻ‚ʻ‚ʻ‚   ",
-        "  ‚ʻ‚ʻ‚ʻ‚    "
-    ],
-    "snowy": [
-        "     .-.     ",
-        "    (   ).   ",
-        "   (___(__)  ",
-        "   * * * *   ",
-        "  * * * *    "
-    ],
-    "windy": [
-        "    _,,,_    ",
-        "   /     \\   ",
-        "  (  ~~~~ )  ",
-        "   \\     /   ",
-        "    ~~~~~    "
-    ],
-    "stormy": [
-        "     .-.     ",
-        "    (   ).   ",
-        "   (___(__)  ",
-        "  ⚡⚡⚡⚡    ",
-        "  ⚡⚡⚡     "
-    ],
-    "foggy": [
-        "             ",
-        " --- --- --- ",
-        " --- --- --- ",
-        " --- --- --- ",
-        "             "
-    ],
-    "default": [
-        "             ",
-        "     ?       ",
-        "    ???      ",
-        "     ?       ",
-        "             "
-    ]
-}
+# Initialise display manager
+display_manager = WeatherDisplayManager()
 
 # Available commands for the help menu
 COMMANDS = {
@@ -122,7 +68,8 @@ def display_loading_indicator(message="Processing"):
     """Display an animated loading indicator whilst waiting."""
     indicators = ['|', '/', '-', '\\']
     i = 0
-    sys.stdout.write(Fore.CYAN + message + " ")
+    message_display = display_manager.format_loading_indicator(message)
+    sys.stdout.write(message_display)
     for _ in range(5):  # Shorter animation to avoid long waits
         sys.stdout.write(indicators[i % len(indicators)] + "\r" + message + " ")
         sys.stdout.flush()
@@ -130,35 +77,6 @@ def display_loading_indicator(message="Processing"):
         i += 1
     sys.stdout.write("\r" + " " * (len(message) + 2) + "\r")
     sys.stdout.flush()
-
-def get_weather_ascii(condition):
-    """Get ASCII art representing weather conditions."""
-    condition = condition.lower() if condition else ""
-
-    if "sun" in condition or "clear" in condition:
-        return WEATHER_ASCII["sunny"]
-    elif "cloud" in condition:
-        return WEATHER_ASCII["cloudy"]
-    elif "rain" in condition or "shower" in condition:
-        return WEATHER_ASCII["rainy"]
-    elif "snow" in condition:
-        return WEATHER_ASCII["snowy"]
-    elif "wind" in condition:
-        return WEATHER_ASCII["windy"]
-    elif "storm" in condition or "thunder" in condition:
-        return WEATHER_ASCII["stormy"]
-    elif "fog" in condition or "mist" in condition:
-        return WEATHER_ASCII["foggy"]
-    else:
-        # Default to cloudy if condition not recognised
-        return WEATHER_ASCII["cloudy"]
-
-def format_weather_ascii(art, color=Fore.YELLOW):
-    """Format ASCII art into a string with colour."""
-    result = color + "\nWeather condition:\n"
-    for line in art:
-        result += color + line + "\n"
-    return result
 
 def format_optimal_flying_day_response(flying_data):
     """
@@ -332,8 +250,7 @@ def format_optimal_flying_day_response(flying_data):
         else:
             weather_condition = "cloudy"
 
-    weather_art = get_weather_ascii(weather_condition)
-    response += format_weather_ascii(weather_art)
+    response += display_manager.format_weather_ascii(weather_condition)
 
     return response
 
@@ -486,12 +403,8 @@ def handle_conversation(query):
                             condition = line.split(': ')[1] if len(line.split(': ')) > 1 else ""
                             break
 
-                    # Get the ASCII art
-                    weather_art = get_weather_ascii(condition)
-                    ascii_art = format_weather_ascii(weather_art)
-
                     # Add colours to the weather info
-                    colorised_info = Fore.CYAN + Style.BRIGHT + f"Weather for {location}" + Style.RESET_ALL + "\n"
+                    colorised_info = display_manager.format_title(f"Weather for {location}")
                     for line in weather_info.split('\n'):
                         if "Temperature:" in line:
                             temp_parts = line.split(': ')
@@ -510,12 +423,12 @@ def handle_conversation(query):
                         elif "Wind:" in line:
                             colorised_info += Fore.CYAN + line + "\n"
                         elif "Warning:" in line:
-                            colorised_info += Fore.RED + Style.BRIGHT + line + "\n" + Style.RESET_ALL
+                            colorised_info += display_manager.format_warning(line.split(": ")[1])
                         else:
                             colorised_info += line + "\n"
 
-                    # Append the ASCII art to the response
-                    colorised_info += ascii_art
+                    # Add the ASCII art for the weather condition
+                    colorised_info += display_manager.format_weather_ascii(condition)
 
                     return colorised_info
                 except ValueError as e:
@@ -552,21 +465,46 @@ def handle_conversation(query):
 def handle_help_command():
     """Display help information about available commands and options."""
     help_text = Fore.CYAN + Style.BRIGHT + "=== Weather Chatbot Help ===" + Style.RESET_ALL + "\n\n"
-    help_text += Fore.WHITE + "Here are the commands you can use:\n\n"
 
-    for command, description in COMMANDS.items():
-        help_text += Fore.GREEN + f"{command}" + Fore.WHITE + f" - {description}\n"
+    # Main Commands Section
+    help_text += Fore.YELLOW + Style.BRIGHT + "🔍 MAIN COMMANDS:" + Style.RESET_ALL + "\n"
 
-    help_text += "\n" + Fore.YELLOW + "Examples:" + Style.RESET_ALL + "\n"
-    help_text += Fore.WHITE + "- weather London tomorrow\n"
-    help_text += Fore.WHITE + "- fly Berlin\n"
-    help_text += Fore.WHITE + "- help\n"
-    help_text += Fore.WHITE + "- about\n\n"
+    help_text += Fore.GREEN + "weather [location] [date]" + Fore.WHITE + " - Get weather forecast for a location and date\n"
+    help_text += Fore.CYAN + "  Shortcuts: w, forecast" + "\n"
+    help_text += Fore.GREEN + "fly [location]" + Fore.WHITE + " - Find the best day for flying in a location\n"
+    help_text += Fore.CYAN + "  Shortcuts: f, flight, flying" + "\n"
+    help_text += Fore.GREEN + "help" + Fore.WHITE + " - Display this help message\n"
+    help_text += Fore.GREEN + "about" + Fore.WHITE + " - Show information about this chatbot\n"
+    help_text += Fore.GREEN + "exit" + Fore.WHITE + " - Exit the application\n"
+    help_text += Fore.CYAN + "  Shortcuts: quit, bye, q" + "\n\n"
 
-    help_text += Fore.CYAN + "You can also ask weather questions in natural language like:\n"
+    # Weather Command Examples
+    help_text += Fore.YELLOW + Style.BRIGHT + "🌤️ WEATHER COMMAND EXAMPLES:" + Style.RESET_ALL + "\n"
+    help_text += Fore.WHITE + "- weather London tomorrow" + Fore.CYAN + " → Weather in London for tomorrow\n"
+    help_text += Fore.WHITE + "- weather Berlin" + Fore.CYAN + f" → Weather in Berlin for today (defaults to today)\n"
+    help_text += Fore.WHITE + "- weather Tokyo next Monday" + Fore.CYAN + " → Weather in Tokyo for next Monday\n"
+    help_text += Fore.WHITE + "- weather Paris last week" + Fore.CYAN + " → Historical weather for Paris one week ago\n\n"
+
+    # Flying Command Examples
+    help_text += Fore.YELLOW + Style.BRIGHT + "✈️ FLYING COMMAND EXAMPLES:" + Style.RESET_ALL + "\n"
+    help_text += Fore.WHITE + "- fly Berlin" + Fore.CYAN + " → Best day to fly in Berlin in the next week\n"
+    help_text += Fore.WHITE + "- flying in Munich" + Fore.CYAN + " → Best day to fly in Munich in the next week\n"
+    help_text += Fore.WHITE + "- flight Zurich" + Fore.CYAN + " → Best day to fly in Zurich in the next week\n\n"
+
+    # Natural Language Examples
+    help_text += Fore.YELLOW + Style.BRIGHT + "💬 NATURAL LANGUAGE EXAMPLES:" + Style.RESET_ALL + "\n"
     help_text += Fore.WHITE + "- What's the weather like in Paris today?\n"
     help_text += Fore.WHITE + "- Will it rain in Tokyo on Friday?\n"
+    help_text += Fore.WHITE + "- How hot will it be in Rome next week?\n"
     help_text += Fore.WHITE + "- What's the best day to fly in Munich this week?\n"
+    help_text += Fore.WHITE + "- Is it a good time to go flying in Sydney?\n\n"
+
+    # Tips
+    help_text += Fore.YELLOW + Style.BRIGHT + "💡 TIPS:" + Style.RESET_ALL + "\n"
+    help_text += Fore.WHITE + "- Default location is set to: " + Fore.CYAN + f"{Config().default_location}\n"
+    help_text += Fore.WHITE + "- Weather forecasts are available for up to 6 days in the future\n"
+    help_text += Fore.WHITE + "- Historical weather data is available for past dates\n"
+    help_text += Fore.WHITE + "- Flying conditions analysis considers wind, precipitation, cloud cover and more\n"
 
     return help_text
 
@@ -605,20 +543,24 @@ def parse_command(user_input):
     """
     input_lower = user_input.lower().strip()
 
-    # Check for exact command matches first
+    # Check for exit commands
+    if input_lower in ["exit", "quit", "bye", "q"]:
+        return "exit", []
+
+    # Check for exact command matches
     if input_lower == "help":
         return "help", []
     elif input_lower == "about":
         return "about", []
-    elif input_lower == "exit":
-        return "exit", []
 
     # Check for command prefixes
     words = input_lower.split()
     if len(words) >= 1:
-        if words[0] == "weather" and len(words) > 1:
+        # Weather command and shortcuts
+        if words[0] in ["weather", "w", "forecast"] and len(words) > 1:
             return "weather", words[1:]
-        elif words[0] in ["fly", "flying", "flight"] and len(words) > 1:
+        # Fly command and shortcuts
+        elif words[0] in ["fly", "flying", "flight", "f"] and len(words) > 1:
             return "fly", words[1:]
 
     # Not a recognised command
