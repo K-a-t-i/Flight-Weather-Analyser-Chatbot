@@ -92,6 +92,15 @@ WEATHER_ASCII = {
     ]
 }
 
+# Available commands for the help menu
+COMMANDS = {
+    "help": "Display this help message",
+    "weather [location] [date]": "Get weather forecast for a location and date",
+    "fly [location]": "Find the best day for flying in a location",
+    "about": "Show information about this chatbot",
+    "exit": "Exit the application"
+}
+
 try:
     # Initialise OpenAI API
     client = OpenAI(api_key=config.api_keys["openai"])
@@ -110,7 +119,7 @@ except Exception as e:
     raise
 
 def display_loading_indicator(message="Processing"):
-    """Display an animated loading indicator."""
+    """Display an animated loading indicator whilst waiting."""
     indicators = ['|', '/', '-', '\\']
     i = 0
     sys.stdout.write(Fore.CYAN + message + " ")
@@ -145,7 +154,7 @@ def get_weather_ascii(condition):
         return WEATHER_ASCII["cloudy"]
 
 def format_weather_ascii(art, color=Fore.YELLOW):
-    """Format ASCII art into a string with color."""
+    """Format ASCII art into a string with colour."""
     result = color + "\nWeather condition:\n"
     for line in art:
         result += color + line + "\n"
@@ -540,6 +549,81 @@ def handle_conversation(query):
             # Generic message for other errors
             return Fore.RED + "I'm sorry, I encountered an error while processing your request. Please try again."
 
+def handle_help_command():
+    """Display help information about available commands and options."""
+    help_text = Fore.CYAN + Style.BRIGHT + "=== Weather Chatbot Help ===" + Style.RESET_ALL + "\n\n"
+    help_text += Fore.WHITE + "Here are the commands you can use:\n\n"
+
+    for command, description in COMMANDS.items():
+        help_text += Fore.GREEN + f"{command}" + Fore.WHITE + f" - {description}\n"
+
+    help_text += "\n" + Fore.YELLOW + "Examples:" + Style.RESET_ALL + "\n"
+    help_text += Fore.WHITE + "- weather London tomorrow\n"
+    help_text += Fore.WHITE + "- fly Berlin\n"
+    help_text += Fore.WHITE + "- help\n"
+    help_text += Fore.WHITE + "- about\n\n"
+
+    help_text += Fore.CYAN + "You can also ask weather questions in natural language like:\n"
+    help_text += Fore.WHITE + "- What's the weather like in Paris today?\n"
+    help_text += Fore.WHITE + "- Will it rain in Tokyo on Friday?\n"
+    help_text += Fore.WHITE + "- What's the best day to fly in Munich this week?\n"
+
+    return help_text
+
+def handle_about_command():
+    """Display information about the chatbot."""
+    about_text = Fore.CYAN + Style.BRIGHT + "=== About Weather Chatbot ===" + Style.RESET_ALL + "\n\n"
+    about_text += Fore.WHITE + "This Weather Chatbot with flight weather analyser was initialised by Sasha & Fabian, with support from Fabio & Sam.\n\n"
+    about_text += Fore.YELLOW + "Features:" + Style.RESET_ALL + "\n"
+    about_text += Fore.WHITE + "- Current weather information for any location\n"
+    about_text += Fore.WHITE + "- Historical weather data for past dates\n"
+    about_text += Fore.WHITE + "- Weather forecasts for up to 6 days in the future\n"
+    about_text += Fore.WHITE + "- Optimal flying day analysis for aviation enthusiasts\n"
+    about_text += Fore.WHITE + "- Visual weather conditions with ASCII art\n\n"
+
+    about_text += Fore.YELLOW + "APIs Used:" + Style.RESET_ALL + "\n"
+    about_text += Fore.WHITE + "- OpenAI for natural language processing\n"
+    about_text += Fore.WHITE + "- Meteoblue for weather forecasting\n"
+    about_text += Fore.WHITE + "- OpenCage for geocoding\n"
+    about_text += Fore.WHITE + "- VisualCrossing for historical weather data\n\n"
+
+    about_text += Fore.RED + "DISCLAIMER: This is a proof-of-concept application intended for educational purposes only.\n"
+    about_text += "It should NOT be used for critical decision-making or safety-related activities.\n"
+    about_text += "Always consult official weather services for important decisions." + Style.RESET_ALL
+
+    return about_text
+
+def parse_command(user_input):
+    """
+    Parse user input to determine if it's a command and extract arguments.
+
+    Args:
+        user_input (str): The user's input string
+
+    Returns:
+        tuple: (command, args) where command is the identified command and args are additional arguments
+    """
+    input_lower = user_input.lower().strip()
+
+    # Check for exact command matches first
+    if input_lower == "help":
+        return "help", []
+    elif input_lower == "about":
+        return "about", []
+    elif input_lower == "exit":
+        return "exit", []
+
+    # Check for command prefixes
+    words = input_lower.split()
+    if len(words) >= 1:
+        if words[0] == "weather" and len(words) > 1:
+            return "weather", words[1:]
+        elif words[0] in ["fly", "flying", "flight"] and len(words) > 1:
+            return "fly", words[1:]
+
+    # Not a recognised command
+    return None, []
+
 def display_welcome_message():
     """Display a styled welcome message."""
     print(Fore.CYAN + Style.BRIGHT + "=" * 80)
@@ -580,6 +664,7 @@ def display_welcome_message():
     print(Fore.WHITE + "- What's the weather like in Berlin tomorrow?")
     print(Fore.WHITE + "- How was the weather in Paris last Monday?")
     print(Fore.WHITE + "- What's the best day to fly in Munich this week?")
+    print(Fore.WHITE + "- Type 'help' to see all available commands")
     print(Fore.WHITE + "- Type 'exit' to quit the chatbot.\n")
 
 def main():
@@ -594,11 +679,47 @@ def main():
 
     while True:
         user_input = input(Fore.GREEN + "You: " + Style.RESET_ALL).strip()
-        if user_input.lower() == 'exit':
+
+        # Parse for commands first
+        command, args = parse_command(user_input)
+
+        if command == "exit":
             logger.info("User exited the application")
             print(Fore.CYAN + "Goodbye!" + Style.RESET_ALL)
             break
+        elif command == "help":
+            logger.info("User requested help")
+            print(Fore.BLUE + "Weather Bot: " + Style.RESET_ALL + handle_help_command() + "\n")
+            continue
+        elif command == "about":
+            logger.info("User requested about information")
+            print(Fore.BLUE + "Weather Bot: " + Style.RESET_ALL + handle_about_command() + "\n")
+            continue
+        elif command == "weather":
+            # Handle weather command with arguments
+            if len(args) >= 2:
+                location = args[0]
+                date = " ".join(args[1:])
+                logger.info(f"Weather command with location={location}, date={date}")
+                weather_query = f"What's the weather in {location} on {date}?"
+                response = handle_conversation(weather_query)
+                print(Fore.BLUE + "Weather Bot: " + Style.RESET_ALL + response + "\n")
+            else:
+                print(Fore.YELLOW + "Weather Bot: Please specify a location and date. For example: 'weather London tomorrow'" + Style.RESET_ALL)
+            continue
+        elif command == "fly":
+            # Handle fly command with arguments
+            if len(args) >= 1:
+                location = " ".join(args)
+                logger.info(f"Fly command with location={location}")
+                response = handle_flying_day_request(f"What is the best day to fly in {location}?")
+                print(Fore.BLUE + "Weather Bot: " + Style.RESET_ALL + response + "\n")
+            else:
+                print(Fore.YELLOW + "Weather Bot: Please specify a location for flying conditions. For example: 'fly Berlin'" + Style.RESET_ALL)
+                flying_mode = True
+            continue
 
+        # If no command recognised, proceed with regular conversation flow
         try:
             # Check if in flying mode waiting for a location
             if flying_mode and not any(keyword in user_input.lower() for keyword in flying_keywords):
