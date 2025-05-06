@@ -58,6 +58,7 @@ can determine an appropriate day for flying activities based on meteorological f
 - **Robust API Handling**: Enhanced reliability and performance
   - Retry mechanism with exponential backoff for API failures
   - Response caching to reduce API calls and improve performance
+  - Asynchronous API requests for faster parallel data fetching
   - Detailed logging of all operations
 
 ## 📋 Requirements
@@ -68,6 +69,13 @@ can determine an appropriate day for flying activities based on meteorological f
 - OpencageAPI key
 - VisualCrossing API key
 - Internet connection
+- Required Python packages (see requirements.txt):
+  - aiohttp (for asynchronous API requests)
+  - requests
+  - python-dotenv
+  - colorama
+  - dateparser
+  - ...and others listed in requirements.txt
 
 ## 🔧 Installation
 
@@ -289,6 +297,18 @@ If you encounter any issues:
   - Use standard date formats (YYYY-MM-DD)
   - Try relative dates like "tomorrow" or "next Monday"
   - Avoid ambiguous date references
+
+#### Asynchronous Processing Issues
+
+- **Missing aiohttp Library**: If you see errors related to missing aiohttp module:
+  - Install the aiohttp package: `pip install aiohttp`
+  - Re-run the application
+  - Note that the application will fall back to synchronous operation if async libraries are unavailable
+
+- **Slow Performance Despite Async Processing**: If flight condition analysis is still slow:
+  - Check your network connection speed
+  - Ensure your API keys are valid and not rate-limited
+  - Verify the cache is functioning correctly to reduce API calls
 
 ## 👨‍💻 Contributing
 
