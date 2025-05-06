@@ -1,6 +1,7 @@
 import json
 from colorama import Fore, Style
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +142,10 @@ class FlyCommandHandler(CommandHandler):
 
             try:
                 # Use the WeatherService to get optimal flying day
-                self.display_manager.display_loading_animation("Analysing flying conditions")
-                flying_data = self.weather_service.get_optimal_flying_day(location)
+                self.display_manager.display_loading_animation("Analysing flying conditions in parallel")
+
+                # Use the async version with asyncio.run
+                flying_data = asyncio.run(self.weather_service.get_optimal_flying_day_async(location))
 
                 # Format the flying data using the display manager
                 return self.display_manager.format_optimal_flying_day_response(flying_data)

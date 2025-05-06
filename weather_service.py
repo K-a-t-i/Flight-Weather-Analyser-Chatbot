@@ -6,9 +6,11 @@ from datetime import datetime, timedelta
 import time
 import hashlib
 import random
+import asyncio
 
 from utils import (
     handle_api_request,
+    handle_api_request_async,
     parse_date,
     logger
 )
@@ -689,6 +691,269 @@ Weather information for our pilots:
             score = max(0, score)
 
             # Add to array of day scores
+            day_scores.append({
+                "date": day_data["date"],
+                "day_name": day_data["day_name"],
+                "score": score,
+                "factors": score_factors,
+                "weather_data": day_data
+            })
+
+        # Sort days by score (highest first)
+        day_scores.sort(key=lambda x: x["score"], reverse=True)
+
+        # Get the best day
+        best_day = day_scores[0]
+
+        # Format the result
+        result = {
+            "location": coordinates["name"],
+            "best_day": {
+                "date": best_day["date"].strftime('%Y-%m-%d'),
+                "day_name": best_day["day_name"],
+                "score": best_day["score"],
+                "factors": best_day["factors"],
+                "weather": best_day["weather_data"]
+            },
+            "all_days": day_scores
+        }
+
+        return result
+
+    async def _get_day_weather_async(self, coordinates, day_offset):
+        """
+        Get weather data for a specific day offset asynchronously.
+
+        Args:
+            coordinates (dict): Location coordinates
+            day_offset (int): Day offset from today (0=today, 1=tomorrow, etc.)
+
+        Returns:
+            dict: Weather data for the specified day or None if error occurs
+        """
+        today = datetime.now().date()
+        forecast_date = today + timedelta(days=day_offset)
+
+        # Prepare API request
+        base_url = "https://my.meteoblue.com/packages/basic-1h"
+        params = {
+            "apikey": self.api_keys["meteoblue"],
+            "lat": coordinates["lat"],
+            "lon": coordinates["lon"],
+            "asl": "0",
+            "format": "json",
+            "tz": "UTC"
+        }
+
+        try:
+            # Use the async version of the API request handler
+            success, response_data = await handle_api_request_async(
+                base_url,
+                params,
+                f"Meteoblue (async day {day_offset})",
+                cache_type="weather",
+                cache_config=self.cache_config
+            )
+
+            if not success:
+                logger.warning(f"Failed to get weather data for day {day_offset} ({forecast_date}) [async]")
+                return None
+
+            if "data_1h" not in response_data:
+                logger.warning(f"Missing data_1h in Meteoblue API response for day {day_offset} [async]")
+                return None
+
+            forecast = response_data["data_1h"]
+
+            # Extract relevant data for the day
+            day_start_idx = day_offset * 24
+            day_end_idx = (day_offset + 1) * 24
+
+            # Calculate daily averages
+            temp = sum(forecast.get("temperature", [0] * 24)[day_start_idx:day_end_idx]) / 24
+            wind_speed = sum(forecast.get("windspeed", [0] * 24)[day_start_idx:day_end_idx]) / 24
+            wind_direction = sum(forecast.get("winddirection", [0] * 24)[day_start_idx:day_end_idx]) / 24
+            precip = sum(forecast.get("precipitation", [0] * 24)[day_start_idx:day_end_idx])
+            snow = sum(forecast.get("snowfall", [0] * 24)[day_start_idx:day_end_idx])
+            humidity = sum(forecast.get("relativehumidity", [0] * 24)[day_start_idx:day_end_idx]) / 24
+
+            # Handle pressure data
+            pressure_values = forecast.get("pressure", [0] * 24)[day_start_idx:day_end_idx]
+            if all(p == 0 for p in pressure_values):
+                pressure = 1013  # Standard atmospheric pressure in hPa
+            else:
+                valid_pressure = [p for p in pressure_values if p > 0]
+                pressure = sum(valid_pressure) / len(valid_pressure) if valid_pressure else 1013
+
+            cloud_cover = sum(forecast.get("cloudcover", [0] * 24)[day_start_idx:day_end_idx]) / 24
+
+            # Return the data as a dictionary
+            return {
+                "date": forecast_date,
+                "temp": temp,
+                "wind_speed": wind_speed,
+                "wind_direction": wind_direction,
+                "precipitation": precip,
+                "snow": snow,
+                "humidity": humidity,
+                "pressure": pressure,
+                "cloud_cover": cloud_cover,
+                "day_name": forecast_date.strftime('%A')
+            }
+
+        except Exception as e:
+            logger.error(f"Error processing async data for day {day_offset}: {str(e)}")
+            return None
+
+    async def get_optimal_flying_day_async(self, location_name):
+        """
+        Asynchronous version of get_optimal_flying_day that fetches weather data for all days in parallel.
+
+        Args:
+            location_name (str): The name of the location to check weather for
+
+        Returns:
+            dict: Information about the optimal flying day with weather details
+        """
+        # Get coordinates for the location (synchronous for now)
+        try:
+            coordinates = self.get_location_coordinates(location_name)
+        except LocationNotFoundException:
+            return f"I'm sorry, but I don't have information for the location '{location_name}'. Could you please check the spelling or try a different city?"
+        except ApiRequestException as e:
+            return f"I'm sorry, I encountered an error while finding your location: {str(e)}"
+
+        logger.info(f"Analysing weather for {location_name} over the next 6 days using async operations...")
+
+        # Create tasks for all 7 days (0=today through 6=+6 days)
+        tasks = []
+        for day_offset in range(7):
+            task = self._get_day_weather_async(coordinates, day_offset)
+            tasks.append(task)
+
+        # Run all tasks concurrently and wait for all results
+        days_data_results = await asyncio.gather(*tasks)
+
+        # Filter out any None results (failed requests)
+        days_data = [day_data for day_data in days_data_results if day_data is not None]
+
+        if not days_data:
+            return "I couldn't retrieve enough weather data to make a recommendation."
+
+        # Calculate flying scores (same logic as synchronous version)
+        day_scores = []
+
+        for day_data in days_data:
+            # Initialise score
+            score = 100
+            score_factors = {}
+
+            # 1. Temperature scoring
+            temp = day_data["temp"]
+            if temp < 5:
+                penalty = (5 - temp) * 3
+                score -= penalty
+                score_factors["temperature"] = f"Too cold ({temp:.1f}°C, -{penalty:.1f} points)"
+            elif temp > 30:
+                penalty = (temp - 30) * 2
+                score -= penalty
+                score_factors["temperature"] = f"Too hot ({temp:.1f}°C, -{penalty:.1f} points)"
+            else:
+                if 10 <= temp <= 25:
+                    bonus = 5
+                    score += bonus
+                    score_factors["temperature"] = f"Ideal temperature ({temp:.1f}°C, +{bonus} points)"
+
+            # 2. Wind speed scoring
+            wind = day_data["wind_speed"]
+            if wind < 5:
+                bonus = 10
+                score += bonus
+                score_factors["wind"] = f"Calm winds ({wind:.1f} km/h, +{bonus} points)"
+            elif wind < 15:
+                bonus = 5
+                score += bonus
+                score_factors["wind"] = f"Light winds ({wind:.1f} km/h, +{bonus} points)"
+            elif wind < 25:
+                penalty = (wind - 15) * 2
+                score -= penalty
+                score_factors["wind"] = f"Moderate winds ({wind:.1f} km/h, -{penalty:.1f} points)"
+            else:
+                penalty = 20 + (wind - 25) * 3
+                score -= penalty
+                score_factors["wind"] = f"Strong winds ({wind:.1f} km/h, -{penalty:.1f} points)"
+
+            # 3. Precipitation scoring
+            precip = day_data["precipitation"]
+            if precip == 0:
+                bonus = 15
+                score += bonus
+                score_factors["precipitation"] = f"No rain (0.0 mm, +{bonus} points)"
+            elif precip < 2:
+                penalty = precip * 10
+                score -= penalty
+                score_factors["precipitation"] = f"Light rain ({precip:.1f} mm, -{penalty:.1f} points)"
+            else:
+                penalty = 20 + (precip - 2) * 5
+                score -= penalty
+                score_factors["precipitation"] = f"Significant rain ({precip:.1f} mm, -{penalty:.1f} points)"
+
+            # 4. Snow scoring
+            snow = day_data["snow"]
+            if snow > 0:
+                penalty = 50 + snow * 10
+                score -= penalty
+                score_factors["snow"] = f"Snowfall detected ({snow:.1f} mm, -{penalty:.1f} points)"
+
+            # 5. Cloud cover scoring
+            clouds = day_data["cloud_cover"]
+            if clouds < 20:
+                bonus = 15
+                score += bonus
+                score_factors["clouds"] = f"Clear skies ({clouds:.0f}% cloud cover, +{bonus} points)"
+            elif clouds < 40:
+                bonus = 10
+                score += bonus
+                score_factors["clouds"] = f"Few clouds ({clouds:.0f}% cloud cover, +{bonus} points)"
+            elif clouds < 70:
+                penalty = (clouds - 40) / 3
+                score -= penalty
+                score_factors["clouds"] = f"Partly cloudy ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
+            else:
+                penalty = 10 + (clouds - 70) / 3
+                score -= penalty
+                score_factors["clouds"] = f"Overcast ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
+
+            # 6. Humidity scoring
+            humidity = day_data["humidity"]
+            if humidity > 90:
+                penalty = (humidity - 90) * 2
+                score -= penalty
+                score_factors["humidity"] = f"Very humid ({humidity:.0f}%, -{penalty:.1f} points)"
+            elif humidity > 70:
+                penalty = (humidity - 70) / 2
+                score -= penalty
+                score_factors["humidity"] = f"Humid ({humidity:.0f}%, -{penalty:.1f} points)"
+
+            # 7. Pressure scoring
+            pressure = day_data["pressure"]
+            if pressure > 1020:
+                bonus = 5
+                score += bonus
+                score_factors["pressure"] = f"High pressure ({pressure:.0f} hPa, +{bonus} points)"
+            elif pressure < 1000:
+                penalty = min((1000 - pressure) / 2, 20)
+                score -= penalty
+                score_factors["pressure"] = f"Low pressure ({pressure:.0f} hPa, -{penalty:.1f} points)"
+            else:
+                bonus = 2
+                score += bonus
+                score_factors["pressure"] = f"Stable pressure ({pressure:.0f} hPa, +{bonus} points)"
+
+            # Ensure score doesn't go below 0
+            score = max(0, score)
+
+            # Add to day scores
             day_scores.append({
                 "date": day_data["date"],
                 "day_name": day_data["day_name"],

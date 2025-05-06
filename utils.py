@@ -8,6 +8,8 @@ import time
 from datetime import datetime, timedelta
 
 import dateparser
+import aiohttp  # async HTTP
+import asyncio  # async operations
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -307,5 +309,120 @@ def handle_api_request(url, params, api_name, cache_type=None, cache_config=None
 
     # Should only be reached if all retries were used up
     error_msg = f"All {max_retries} retries failed for {api_name} API request"
+    logger.error(error_msg)
+    return False, f"Error: {error_msg}"
+
+async def handle_api_request_async(url, params, api_name, cache_type=None, cache_config=None):
+    """
+    Asynchronous version of handle_api_request for parallel API calls.
+
+    Args:
+        url (str): API endpoint URL
+        params (dict): Parameters for the API request
+        api_name (str): Name of the API for logging purposes
+        cache_type (str, optional): Type of cache to use ('coordinates', 'weather', 'historical')
+        cache_config (dict, optional): Configuration for caching
+
+    Returns:
+        tuple: (success, data) where success is a boolean and data is the JSON response or error message
+    """
+    # Set default cache configuration if not provided
+    if cache_config is None:
+        cache_config = {
+            'enabled': False,
+            'directory': 'cache',
+            'ttl': {
+                'coordinates': 60 * 60 * 24 * 30,  # 30 days
+                'weather': 60 * 60,  # 1 hour
+                'historical': 60 * 60 * 24 * 365  # 1 year
+            },
+            'max_retries': 3,
+            'base_retry_delay': 1.0,
+            'max_retry_delay': 10.0
+        }
+
+    # Check cache if enabled and cache_type is provided
+    if cache_type and cache_config['enabled']:
+        cache_key = generate_cache_key(url, params, cache_type)
+        cache_ttl = cache_config['ttl'].get(cache_type, 3600)  # Default to 1 hour if type not found
+
+        cache_hit, cached_data = get_from_cache(
+            cache_config['directory'],
+            cache_key,
+            cache_ttl,
+            cache_config['enabled']
+        )
+        if cache_hit:
+            logger.info(f"Using cached data for {api_name} API request (async)")
+            return True, cached_data
+
+    retries = 0
+    max_retries = cache_config.get('max_retries', 3)
+    base_retry_delay = cache_config.get('base_retry_delay', 1.0)
+    max_retry_delay = cache_config.get('max_retry_delay', 10.0)
+
+    while retries <= max_retries:
+        try:
+            if retries > 0:
+                # Calculate backoff delay with jitter
+                delay = min(base_retry_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_retry_delay)
+                logger.info(f"Retry {retries}/{max_retries} for {api_name} API request after {delay:.2f}s delay (async)")
+                await asyncio.sleep(delay)
+
+            logger.info(f"Making async {api_name} API request to {url}" + (f" (retry {retries})" if retries > 0 else ""))
+
+            # Use aiohttp for async HTTP requests
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=10) as response:
+                    # Check for rate limiting or server errors that should trigger retries
+                    if response.status in [429, 500, 502, 503, 504]:
+                        retries += 1
+                        logger.warning(f"{api_name} API returned status code {response.status}, triggering retry (async)")
+                        continue
+
+                    if response.status == 200:
+                        data = await response.json()
+                        logger.info(f"Successful {api_name} API response (async)")
+
+                        # Save to cache if caching is enabled
+                        if cache_type and cache_config['enabled']:
+                            save_to_cache(cache_config['directory'], cache_key, data, cache_config['enabled'])
+
+                        return True, data
+                    else:
+                        error_msg = f"{api_name} API returned status code {response.status} (async)"
+                        logger.error(error_msg)
+                        return False, f"Error: {error_msg}"
+
+        except asyncio.TimeoutError:
+            retries += 1
+            if retries <= max_retries:
+                logger.warning(f"{api_name} API request timed out, retry {retries}/{max_retries} (async)")
+                continue
+            error_msg = f"{api_name} API request timed out after {max_retries} retries (async)"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+        except aiohttp.ClientConnectionError:
+            retries += 1
+            if retries <= max_retries:
+                logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{max_retries} (async)")
+                continue
+            error_msg = f"Connection error when accessing {api_name} API after {max_retries} retries (async)"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+        except json.JSONDecodeError:
+            error_msg = f"Invalid JSON response from {api_name} API (async)"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+        except Exception as e:
+            error_msg = f"Unexpected error in {api_name} API request: {str(e)} (async)"
+            logger.error(error_msg)
+            return False, f"Error: {error_msg}"
+
+    # Should only be reached if all retries were used up
+    error_msg = f"All {max_retries} retries failed for {api_name} API request (async)"
     logger.error(error_msg)
     return False, f"Error: {error_msg}"
