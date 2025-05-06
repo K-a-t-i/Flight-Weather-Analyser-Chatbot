@@ -144,8 +144,18 @@ class FlyCommandHandler(CommandHandler):
                 # Use the WeatherService to get optimal flying day
                 self.display_manager.display_loading_animation("Analysing flying conditions in parallel")
 
-                # Use the async version with asyncio.run
-                flying_data = asyncio.run(self.weather_service.get_optimal_flying_day_async(location))
+                # Try the async version with asyncio.run
+                try:
+                    # Check if asyncio is available and properly configured
+                    logger.info("Attempting to use asynchronous API for flying conditions analysis")
+                    flying_data = asyncio.run(self.weather_service.get_optimal_flying_day_async(location))
+                    logger.info("Successfully used asynchronous API for flying conditions")
+                except (ImportError, AttributeError, RuntimeError) as e:
+                    # Handle case where asyncio is not available or properly configured
+                    logger.warning(f"Async API failed, falling back to synchronous mode: {str(e)}")
+                    self.display_manager.display_loading_animation("Async API unavailable, using standard analysis")
+                    flying_data = self.weather_service.get_optimal_flying_day(location)
+                    logger.info("Successfully used synchronous API as fallback")
 
                 # Format the flying data using the display manager
                 return self.display_manager.format_optimal_flying_day_response(flying_data)
