@@ -462,6 +462,132 @@ Weather information for our pilots:
 
         return weather_info
 
+    def _score_flying_conditions(self, day_data):
+        """
+        Calculate a flying conditions score based on weather parameters.
+
+        Args:
+            day_data (dict): Dictionary containing weather data for a single day
+
+        Returns:
+            dict: Dictionary with score, factors affecting the score, and weather data
+        """
+        # Initialise score
+        score = 100
+        score_factors = {}
+
+        # Extract weather parameters
+        temp = day_data["temp"]
+        wind = day_data["wind_speed"]
+        precip = day_data["precipitation"]
+        snow = day_data["snow"]
+        clouds = day_data["cloud_cover"]
+        humidity = day_data["humidity"]
+        pressure = day_data["pressure"]
+
+        # 1. Temperature scoring
+        if temp < 5:
+            penalty = (5 - temp) * 3
+            score -= penalty
+            score_factors["temperature"] = f"Too cold ({temp:.1f}°C, -{penalty:.1f} points)"
+        elif temp > 30:
+            penalty = (temp - 30) * 2
+            score -= penalty
+            score_factors["temperature"] = f"Too hot ({temp:.1f}°C, -{penalty:.1f} points)"
+        else:
+            if 10 <= temp <= 25:
+                bonus = 5
+                score += bonus
+                score_factors["temperature"] = f"Ideal temperature ({temp:.1f}°C, +{bonus} points)"
+
+        # 2. Wind speed scoring
+        if wind < 5:
+            bonus = 10
+            score += bonus
+            score_factors["wind"] = f"Calm winds ({wind:.1f} km/h, +{bonus} points)"
+        elif wind < 15:
+            bonus = 5
+            score += bonus
+            score_factors["wind"] = f"Light winds ({wind:.1f} km/h, +{bonus} points)"
+        elif wind < 25:
+            penalty = (wind - 15) * 2
+            score -= penalty
+            score_factors["wind"] = f"Moderate winds ({wind:.1f} km/h, -{penalty:.1f} points)"
+        else:
+            penalty = 20 + (wind - 25) * 3
+            score -= penalty
+            score_factors["wind"] = f"Strong winds ({wind:.1f} km/h, -{penalty:.1f} points)"
+
+        # 3. Precipitation scoring
+        if precip == 0:
+            bonus = 15
+            score += bonus
+            score_factors["precipitation"] = f"No rain (0.0 mm, +{bonus} points)"
+        elif precip < 2:
+            penalty = precip * 10
+            score -= penalty
+            score_factors["precipitation"] = f"Light rain ({precip:.1f} mm, -{penalty:.1f} points)"
+        else:
+            penalty = 20 + (precip - 2) * 5
+            score -= penalty
+            score_factors["precipitation"] = f"Significant rain ({precip:.1f} mm, -{penalty:.1f} points)"
+
+        # 4. Snow scoring
+        if snow > 0:
+            penalty = 50 + snow * 10
+            score -= penalty
+            score_factors["snow"] = f"Snowfall detected ({snow:.1f} mm, -{penalty:.1f} points)"
+
+        # 5. Cloud cover scoring
+        if clouds < 20:
+            bonus = 15
+            score += bonus
+            score_factors["clouds"] = f"Clear skies ({clouds:.0f}% cloud cover, +{bonus} points)"
+        elif clouds < 40:
+            bonus = 10
+            score += bonus
+            score_factors["clouds"] = f"Few clouds ({clouds:.0f}% cloud cover, +{bonus} points)"
+        elif clouds < 70:
+            penalty = (clouds - 40) / 3
+            score -= penalty
+            score_factors["clouds"] = f"Partly cloudy ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
+        else:
+            penalty = 10 + (clouds - 70) / 3
+            score -= penalty
+            score_factors["clouds"] = f"Overcast ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
+
+        # 6. Humidity scoring
+        if humidity > 90:
+            penalty = (humidity - 90) * 2
+            score -= penalty
+            score_factors["humidity"] = f"Very humid ({humidity:.0f}%, -{penalty:.1f} points)"
+        elif humidity > 70:
+            penalty = (humidity - 70) / 2
+            score -= penalty
+            score_factors["humidity"] = f"Humid ({humidity:.0f}%, -{penalty:.1f} points)"
+
+        # 7. Pressure scoring
+        if pressure > 1020:
+            bonus = 5
+            score += bonus
+            score_factors["pressure"] = f"High pressure ({pressure:.0f} hPa, +{bonus} points)"
+        elif pressure < 1000:
+            penalty = min((1000 - pressure) / 2, 20)
+            score -= penalty
+            score_factors["pressure"] = f"Low pressure ({pressure:.0f} hPa, -{penalty:.1f} points)"
+        else:
+            bonus = 2
+            score += bonus
+            score_factors["pressure"] = f"Stable pressure ({pressure:.0f} hPa, +{bonus} points)"
+
+        # Ensure score doesn't go below 0
+        score = max(0, score)
+
+        return {
+            "score": score,
+            "factors": score_factors
+        }
+
     def get_optimal_flying_day(self, location_name):
         """
         Determines the optimal day for flying in the next 6 days based on weather conditions.
@@ -574,128 +700,15 @@ Weather information for our pilots:
         day_scores = []
 
         for day_data in days_data:
-            # Initialise score
-            score = 100
-
-            # Dictionary to store conditions that affected the score
-            score_factors = {}
-
-            # Apply conditional scoring based on meteorological factors important for general aviation
-
-            # 1. Temperature - ideal range is 10-25°C
-            temp = day_data["temp"]
-            if temp < 5:
-                penalty = (5 - temp) * 3
-                score -= penalty
-                score_factors["temperature"] = f"Too cold ({temp:.1f}°C, -{penalty:.1f} points)"
-            elif temp > 30:
-                penalty = (temp - 30) * 2
-                score -= penalty
-                score_factors["temperature"] = f"Too hot ({temp:.1f}°C, -{penalty:.1f} points)"
-            else:
-                # Optimal temperature bonus
-                if 10 <= temp <= 25:
-                    bonus = 5
-                    score += bonus
-                    score_factors["temperature"] = f"Ideal temperature ({temp:.1f}°C, +{bonus} points)"
-
-            # 2. Wind speed - ideal is below 15 km/h
-            wind = day_data["wind_speed"]
-            if wind < 5:
-                bonus = 10
-                score += bonus
-                score_factors["wind"] = f"Calm winds ({wind:.1f} km/h, +{bonus} points)"
-            elif wind < 15:
-                bonus = 5
-                score += bonus
-                score_factors["wind"] = f"Light winds ({wind:.1f} km/h, +{bonus} points)"
-            elif wind < 25:
-                penalty = (wind - 15) * 2
-                score -= penalty
-                score_factors["wind"] = f"Moderate winds ({wind:.1f} km/h, -{penalty:.1f} points)"
-            else:
-                penalty = 20 + (wind - 25) * 3
-                score -= penalty
-                score_factors["wind"] = f"Strong winds ({wind:.1f} km/h, -{penalty:.1f} points)"
-
-            # 3. Precipitation - ideally none
-            precip = day_data["precipitation"]
-            if precip == 0:
-                bonus = 15
-                score += bonus
-                score_factors["precipitation"] = f"No rain (0.0 mm, +{bonus} points)"
-            elif precip < 2:
-                penalty = precip * 10
-                score -= penalty
-                score_factors["precipitation"] = f"Light rain ({precip:.1f} mm, -{penalty:.1f} points)"
-            else:
-                penalty = 20 + (precip - 2) * 5
-                score -= penalty
-                score_factors["precipitation"] = f"Significant rain ({precip:.1f} mm, -{penalty:.1f} points)"
-
-            # 4. Snow - any snow is bad for flying
-            snow = day_data["snow"]
-            if snow > 0:
-                penalty = 50 + snow * 10
-                score -= penalty
-                score_factors["snow"] = f"Snowfall detected ({snow:.1f} mm, -{penalty:.1f} points)"
-
-            # 5. Cloud cover - clearer is better
-            clouds = day_data["cloud_cover"]
-            if clouds < 20:
-                bonus = 15
-                score += bonus
-                score_factors["clouds"] = f"Clear skies ({clouds:.0f}% cloud cover, +{bonus} points)"
-            elif clouds < 40:
-                bonus = 10
-                score += bonus
-                score_factors["clouds"] = f"Few clouds ({clouds:.0f}% cloud cover, +{bonus} points)"
-            elif clouds < 70:
-                penalty = (clouds - 40) / 3
-                score -= penalty
-                score_factors["clouds"] = f"Partly cloudy ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
-            else:
-                penalty = 10 + (clouds - 70) / 3
-                score -= penalty
-                score_factors["clouds"] = f"Overcast ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
-
-            # 6. Humidity - lower is better for visibility
-            humidity = day_data["humidity"]
-            if humidity > 90:
-                penalty = (humidity - 90) * 2
-                score -= penalty
-                score_factors["humidity"] = f"Very humid ({humidity:.0f}%, -{penalty:.1f} points)"
-            elif humidity > 70:
-                penalty = (humidity - 70) / 2
-                score -= penalty
-                score_factors["humidity"] = f"Humid ({humidity:.0f}%, -{penalty:.1f} points)"
-
-            # 7. Pressure - stable high pressure is best
-            pressure = day_data["pressure"]
-            if pressure > 1020:
-                bonus = 5
-                score += bonus
-                score_factors["pressure"] = f"High pressure ({pressure:.0f} hPa, +{bonus} points)"
-            elif pressure < 1000:
-                # Cap the penalty to avoid extreme values
-                penalty = min((1000 - pressure) / 2, 20)
-                score -= penalty
-                score_factors["pressure"] = f"Low pressure ({pressure:.0f} hPa, -{penalty:.1f} points)"
-            else:
-                # Standard pressure is good for flying
-                bonus = 2
-                score += bonus
-                score_factors["pressure"] = f"Stable pressure ({pressure:.0f} hPa, +{bonus} points)"
-
-            # Ensure score doesn't go below 0
-            score = max(0, score)
+            # Calculate flying score using the shared helper method
+            score_result = self._score_flying_conditions(day_data)
 
             # Add to array of day scores
             day_scores.append({
                 "date": day_data["date"],
                 "day_name": day_data["day_name"],
-                "score": score,
-                "factors": score_factors,
+                "score": score_result["score"],
+                "factors": score_result["factors"],
                 "weather_data": day_data
             })
 
@@ -840,125 +853,19 @@ Weather information for our pilots:
         if not days_data:
             return "I couldn't retrieve enough weather data to make a recommendation."
 
-        # Calculate flying scores (same logic as synchronous version)
+        # Calculate flying scores for each day
         day_scores = []
 
         for day_data in days_data:
-            # Initialise score
-            score = 100
-            score_factors = {}
-
-            # 1. Temperature scoring
-            temp = day_data["temp"]
-            if temp < 5:
-                penalty = (5 - temp) * 3
-                score -= penalty
-                score_factors["temperature"] = f"Too cold ({temp:.1f}°C, -{penalty:.1f} points)"
-            elif temp > 30:
-                penalty = (temp - 30) * 2
-                score -= penalty
-                score_factors["temperature"] = f"Too hot ({temp:.1f}°C, -{penalty:.1f} points)"
-            else:
-                if 10 <= temp <= 25:
-                    bonus = 5
-                    score += bonus
-                    score_factors["temperature"] = f"Ideal temperature ({temp:.1f}°C, +{bonus} points)"
-
-            # 2. Wind speed scoring
-            wind = day_data["wind_speed"]
-            if wind < 5:
-                bonus = 10
-                score += bonus
-                score_factors["wind"] = f"Calm winds ({wind:.1f} km/h, +{bonus} points)"
-            elif wind < 15:
-                bonus = 5
-                score += bonus
-                score_factors["wind"] = f"Light winds ({wind:.1f} km/h, +{bonus} points)"
-            elif wind < 25:
-                penalty = (wind - 15) * 2
-                score -= penalty
-                score_factors["wind"] = f"Moderate winds ({wind:.1f} km/h, -{penalty:.1f} points)"
-            else:
-                penalty = 20 + (wind - 25) * 3
-                score -= penalty
-                score_factors["wind"] = f"Strong winds ({wind:.1f} km/h, -{penalty:.1f} points)"
-
-            # 3. Precipitation scoring
-            precip = day_data["precipitation"]
-            if precip == 0:
-                bonus = 15
-                score += bonus
-                score_factors["precipitation"] = f"No rain (0.0 mm, +{bonus} points)"
-            elif precip < 2:
-                penalty = precip * 10
-                score -= penalty
-                score_factors["precipitation"] = f"Light rain ({precip:.1f} mm, -{penalty:.1f} points)"
-            else:
-                penalty = 20 + (precip - 2) * 5
-                score -= penalty
-                score_factors["precipitation"] = f"Significant rain ({precip:.1f} mm, -{penalty:.1f} points)"
-
-            # 4. Snow scoring
-            snow = day_data["snow"]
-            if snow > 0:
-                penalty = 50 + snow * 10
-                score -= penalty
-                score_factors["snow"] = f"Snowfall detected ({snow:.1f} mm, -{penalty:.1f} points)"
-
-            # 5. Cloud cover scoring
-            clouds = day_data["cloud_cover"]
-            if clouds < 20:
-                bonus = 15
-                score += bonus
-                score_factors["clouds"] = f"Clear skies ({clouds:.0f}% cloud cover, +{bonus} points)"
-            elif clouds < 40:
-                bonus = 10
-                score += bonus
-                score_factors["clouds"] = f"Few clouds ({clouds:.0f}% cloud cover, +{bonus} points)"
-            elif clouds < 70:
-                penalty = (clouds - 40) / 3
-                score -= penalty
-                score_factors["clouds"] = f"Partly cloudy ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
-            else:
-                penalty = 10 + (clouds - 70) / 3
-                score -= penalty
-                score_factors["clouds"] = f"Overcast ({clouds:.0f}% cloud cover, -{penalty:.1f} points)"
-
-            # 6. Humidity scoring
-            humidity = day_data["humidity"]
-            if humidity > 90:
-                penalty = (humidity - 90) * 2
-                score -= penalty
-                score_factors["humidity"] = f"Very humid ({humidity:.0f}%, -{penalty:.1f} points)"
-            elif humidity > 70:
-                penalty = (humidity - 70) / 2
-                score -= penalty
-                score_factors["humidity"] = f"Humid ({humidity:.0f}%, -{penalty:.1f} points)"
-
-            # 7. Pressure scoring
-            pressure = day_data["pressure"]
-            if pressure > 1020:
-                bonus = 5
-                score += bonus
-                score_factors["pressure"] = f"High pressure ({pressure:.0f} hPa, +{bonus} points)"
-            elif pressure < 1000:
-                penalty = min((1000 - pressure) / 2, 20)
-                score -= penalty
-                score_factors["pressure"] = f"Low pressure ({pressure:.0f} hPa, -{penalty:.1f} points)"
-            else:
-                bonus = 2
-                score += bonus
-                score_factors["pressure"] = f"Stable pressure ({pressure:.0f} hPa, +{bonus} points)"
-
-            # Ensure score doesn't go below 0
-            score = max(0, score)
+            # Calculate flying score using the shared helper method
+            score_result = self._score_flying_conditions(day_data)
 
             # Add to day scores
             day_scores.append({
                 "date": day_data["date"],
                 "day_name": day_data["day_name"],
-                "score": score,
-                "factors": score_factors,
+                "score": score_result["score"],
+                "factors": score_result["factors"],
                 "weather_data": day_data
             })
 
