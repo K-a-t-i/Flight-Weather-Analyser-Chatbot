@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+import functools
 from datetime import datetime, timedelta
 
 import dateparser
@@ -14,6 +15,74 @@ import asyncio  # async operations
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Decorator for timing function execution
+def timing_decorator(func):
+    """
+    Decorator to measure and log execution time of a function.
+
+    Args:
+        func: The function to be timed
+
+    Returns:
+        Wrapped function that logs execution time
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        logger.info(f"Function {func.__name__} executed in {execution_time:.4f} seconds")
+        return result
+    return wrapper
+
+# Decorator for async timing
+def async_timing_decorator(func):
+    """
+    Decorator to measure and log execution time of an async function.
+
+    Args:
+        func: The async function to be timed
+
+    Returns:
+        Wrapped async function that logs execution time
+    """
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = await func(*args, **kwargs)
+        end_time = time.time()
+        execution_time = end_time - start_time
+        logger.info(f"Async function {func.__name__} executed in {execution_time:.4f} seconds")
+        return result
+    return wrapper
+
+# Decorator for logging function calls
+def log_function_call(func):
+    """
+    Decorator to log function calls with arguments and return values.
+
+    Args:
+        func: The function to log
+
+    Returns:
+        Wrapped function that logs calls
+    """
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        args_repr = [repr(a) for a in args]
+        kwargs_repr = [f"{k}={v!r}" for k, v in kwargs.items()]
+        signature = ", ".join(args_repr + kwargs_repr)
+        logger.debug(f"Calling {func.__name__}({signature})")
+        try:
+            result = func(*args, **kwargs)
+            logger.debug(f"{func.__name__} returned {result!r}")
+            return result
+        except Exception as e:
+            logger.error(f"{func.__name__} raised {type(e).__name__}: {str(e)}")
+            raise
+    return wrapper
 
 def get_env_variable(var_name, default=None, required=False):
     """
@@ -63,6 +132,7 @@ def get_cache_path(cache_directory, cache_key):
     """Get the full path to a cache file."""
     return os.path.join(cache_directory, f"{cache_key}.json")
 
+@log_function_call
 def save_to_cache(cache_directory, cache_key, data, cache_enabled=True):
     """
     Save data to the cache.
@@ -90,6 +160,7 @@ def save_to_cache(cache_directory, cache_key, data, cache_enabled=True):
     except Exception as e:
         logger.warning(f"Failed to save data to cache: {str(e)}")
 
+@log_function_call
 def get_from_cache(cache_directory, cache_key, ttl, cache_enabled=True):
     """
     Retrieve data from the cache if it exists and is not expired.
@@ -197,6 +268,7 @@ def parse_date(date_string):
     else:
         raise ValueError(f"Unable to parse date: {date_string}")
 
+@timing_decorator
 def handle_api_request(url, params, api_name, cache_type=None, cache_config=None):
     """
     Handle API requests with error handling, logging, caching, and retry mechanism.
@@ -312,6 +384,7 @@ def handle_api_request(url, params, api_name, cache_type=None, cache_config=None
     logger.error(error_msg)
     return False, f"Error: {error_msg}"
 
+@async_timing_decorator
 async def handle_api_request_async(url, params, api_name, cache_type=None, cache_config=None):
     """
     Asynchronous version of handle_api_request for parallel API calls.
