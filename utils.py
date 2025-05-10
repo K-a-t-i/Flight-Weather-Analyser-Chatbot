@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import dateparser
 import aiohttp  # async HTTP
 import asyncio  # async operations
+import requests  # For type checking, not for global dependency
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -83,6 +84,168 @@ def log_function_call(func):
             logger.error(f"{func.__name__} raised {type(e).__name__}: {str(e)}")
             raise
     return wrapper
+
+# Unified retry decorator for both sync and async functions
+def retry_decorator(max_retries=3, base_delay=1.0, max_delay=10.0):
+    """
+    Unified decorator for retrying synchronous and asynchronous functions
+    with error handling and exponential backoff.
+
+    Args:
+        max_retries: Maximum number of retries
+        base_delay: Initial delay between retries in seconds
+        max_delay: Maximum delay between retries in seconds
+
+    Returns:
+         Wrapper function based on whether the decorated function is async or not
+    """
+    def decorator(func):
+        is_async = asyncio.iscoroutinefunction(func)
+
+        if is_async:
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                # Extract API name for clearer error messages
+                api_name = kwargs.get('api_name', func.__name__)
+                retries = 0
+
+                while retries <= max_retries:
+                    try:
+                        async with aiohttp.ClientSession() as session:
+                            if 'session' not in kwargs and 'handle_api_request_async' in func.__name__:
+                                # If the function is API handler and no session was provided,
+                                # inject the session to avoid creating nested sessions
+                                kwargs['session'] = session
+
+                            result = await func(*args, **kwargs)
+
+                            # If result is a tuple with response status for API responses
+                            if isinstance(result, tuple) and len(result) >= 2:
+                                success, data = result[0], result[1]
+                                if not success and isinstance(data, aiohttp.ClientResponse):
+                                    # Check for specific error status codes that should trigger retries
+                                    if data.status in [429, 500, 502, 503, 504]:
+                                        retries += 1
+                                        if retries > max_retries:
+                                            error_msg = f"All {max_retries} retries failed for {api_name} API request (async)"
+                                            logger.error(error_msg)
+                                            return False, f"Error: {error_msg}"
+
+                                        delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                                        logger.warning(f"{api_name} API returned status code {data.status}, retry {retries}/{max_retries} after {delay:.2f}s (async)")
+                                        await asyncio.sleep(delay)
+                                        continue
+
+                            return result
+
+                    except asyncio.TimeoutError:
+                        retries += 1
+                        if retries > max_retries:
+                            error_msg = f"{api_name} API request timed out after {max_retries} retries (async)"
+                            logger.error(error_msg)
+                            return False, f"Error: {error_msg}"
+
+                        delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                        logger.warning(f"{api_name} API request timed out, retry {retries}/{max_retries} after {delay:.2f}s (async)")
+                        await asyncio.sleep(delay)
+
+                    except aiohttp.ClientConnectionError:
+                        retries += 1
+                        if retries > max_retries:
+                            error_msg = f"Connection error when accessing {api_name} API after {max_retries} retries (async)"
+                            logger.error(error_msg)
+                            return False, f"Error: {error_msg}"
+
+                        delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                        logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{max_retries} after {delay:.2f}s (async)")
+                        await asyncio.sleep(delay)
+
+                    except json.JSONDecodeError:
+                        error_msg = f"Invalid JSON response from {api_name} API (async)"
+                        logger.error(error_msg)
+                        return False, f"Error: {error_msg}"
+
+                    except Exception as e:
+                        error_msg = f"Unexpected error in {api_name} API request: {str(e)} (async)"
+                        logger.error(error_msg)
+                        return False, f"Error: {error_msg}"
+
+                # Should only be reached if all retries were used up
+                error_msg = f"All {max_retries} retries failed for {api_name} API request (async)"
+                logger.error(error_msg)
+                return False, f"Error: {error_msg}"
+
+            return async_wrapper
+
+        else:
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                # Extract API name for clearer error messages
+                api_name = kwargs.get('api_name', func.__name__)
+                retries = 0
+
+                while retries <= max_retries:
+                    try:
+                        result = func(*args, **kwargs)
+
+                        # If result is a tuple with response status for API responses
+                        if isinstance(result, tuple) and len(result) >= 2:
+                            success, data = result[0], result[1]
+                            if not success and isinstance(data, requests.Response):
+                                # Check for specific error status codes that should trigger retries
+                                if data.status_code in [429, 500, 502, 503, 504]:
+                                    retries += 1
+                                    if retries > max_retries:
+                                        error_msg = f"All {max_retries} retries failed for {api_name} API request"
+                                        logger.error(error_msg)
+                                        return False, f"Error: {error_msg}"
+
+                                    delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                                    logger.warning(f"{api_name} API returned status code {data.status_code}, retry {retries}/{max_retries} after {delay:.2f}s")
+                                    time.sleep(delay)
+                                    continue
+
+                        return result
+
+                    except requests.exceptions.Timeout:
+                        retries += 1
+                        if retries > max_retries:
+                            error_msg = f"{api_name} API request timed out after {max_retries} retries"
+                            logger.error(error_msg)
+                            return False, f"Error: {error_msg}"
+
+                        delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                        logger.warning(f"{api_name} API request timed out, retry {retries}/{max_retries} after {delay:.2f}s")
+                        time.sleep(delay)
+
+                    except requests.exceptions.ConnectionError:
+                        retries += 1
+                        if retries > max_retries:
+                            error_msg = f"Connection error when accessing {api_name} API after {max_retries} retries"
+                            logger.error(error_msg)
+                            return False, f"Error: {error_msg}"
+
+                        delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                        logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{max_retries} after {delay:.2f}s")
+                        time.sleep(delay)
+
+                    except json.JSONDecodeError:
+                        error_msg = f"Invalid JSON response from {api_name} API"
+                        logger.error(error_msg)
+                        return False, f"Error: {error_msg}"
+
+                    except Exception as e:
+                        error_msg = f"Unexpected error in {api_name} API request: {str(e)}"
+                        logger.error(error_msg)
+                        return False, f"Error: {error_msg}"
+
+                # Should only be reached if all retries were used up
+                error_msg = f"All {max_retries} retries failed for {api_name} API request"
+                logger.error(error_msg)
+                return False, f"Error: {error_msg}"
+
+            return sync_wrapper
+    return decorator
 
 def get_env_variable(var_name, default=None, required=False):
     """
@@ -269,6 +432,7 @@ def parse_date(date_string):
         raise ValueError(f"Unable to parse date: {date_string}")
 
 @timing_decorator
+@retry_decorator(max_retries=3)
 def handle_api_request(url, params, api_name, cache_type=None, cache_config=None):
     """
     Handle API requests with error handling, logging, caching, and retry mechanism.
@@ -315,77 +479,26 @@ def handle_api_request(url, params, api_name, cache_type=None, cache_config=None
             logger.info(f"Using cached data for {api_name} API request")
             return True, cached_data
 
-    retries = 0
-    max_retries = cache_config.get('max_retries', 3)
-    base_retry_delay = cache_config.get('base_retry_delay', 1.0)
-    max_retry_delay = cache_config.get('max_retry_delay', 10.0)
+    # Make the API request
+    logger.info(f"Making {api_name} API request to {url}")
+    response = requests.get(url, params=params, timeout=10)
 
-    while retries <= max_retries:
-        try:
-            if retries > 0:
-                # Calculate backoff delay with jitter
-                delay = min(base_retry_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_retry_delay)
-                logger.info(f"Retry {retries}/{max_retries} for {api_name} API request after {delay:.2f}s delay")
-                time.sleep(delay)
+    if response.status_code == 200:
+        data = response.json()
+        logger.info(f"Successful {api_name} API response")
 
-            logger.info(f"Making {api_name} API request to {url}" + (f" (retry {retries})" if retries > 0 else ""))
-            response = requests.get(url, params=params, timeout=10)
+        # Save to cache if caching is enabled
+        if cache_type and cache_config['enabled']:
+            save_to_cache(cache_config['directory'], cache_key, data, cache_config['enabled'])
 
-            # Check for rate limiting or server errors that should trigger retries
-            if response.status_code in [429, 500, 502, 503, 504]:
-                retries += 1
-                logger.warning(f"{api_name} API returned status code {response.status_code}, triggering retry")
-                continue
-
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"Successful {api_name} API response")
-
-                # Save to cache if caching is enabled
-                if cache_type and cache_config['enabled']:
-                    save_to_cache(cache_config['directory'], cache_key, data, cache_config['enabled'])
-
-                return True, data
-            else:
-                error_msg = f"{api_name} API returned status code {response.status_code}"
-                logger.error(error_msg)
-                return False, f"Error: {error_msg}"
-
-        except requests.exceptions.Timeout:
-            retries += 1
-            if retries <= max_retries:
-                logger.warning(f"{api_name} API request timed out, retry {retries}/{max_retries}")
-                continue
-            error_msg = f"{api_name} API request timed out after {max_retries} retries"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except requests.exceptions.ConnectionError:
-            retries += 1
-            if retries <= max_retries:
-                logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{max_retries}")
-                continue
-            error_msg = f"Connection error when accessing {api_name} API after {max_retries} retries"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except json.JSONDecodeError:
-            error_msg = f"Invalid JSON response from {api_name} API"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except Exception as e:
-            error_msg = f"Unexpected error in {api_name} API request: {str(e)}"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-    # Should only be reached if all retries were used up
-    error_msg = f"All {max_retries} retries failed for {api_name} API request"
-    logger.error(error_msg)
-    return False, f"Error: {error_msg}"
+        return True, data
+    else:
+        # Return the response object for the decorator to handle status code retries
+        return False, response
 
 @async_timing_decorator
-async def handle_api_request_async(url, params, api_name, cache_type=None, cache_config=None):
+@retry_decorator(max_retries=3)
+async def handle_api_request_async(url, params, api_name, cache_type=None, cache_config=None, session=None):
     """
     Asynchronous version of handle_api_request for parallel API calls.
 
@@ -395,6 +508,7 @@ async def handle_api_request_async(url, params, api_name, cache_type=None, cache
         api_name (str): Name of the API for logging purposes
         cache_type (str, optional): Type of cache to use ('coordinates', 'weather', 'historical')
         cache_config (dict, optional): Configuration for caching
+        session (aiohttp.ClientSession, optional): Session to use for the request
 
     Returns:
         tuple: (success, data) where success is a boolean and data is the JSON response or error message
@@ -429,73 +543,30 @@ async def handle_api_request_async(url, params, api_name, cache_type=None, cache
             logger.info(f"Using cached data for {api_name} API request (async)")
             return True, cached_data
 
-    retries = 0
-    max_retries = cache_config.get('max_retries', 3)
-    base_retry_delay = cache_config.get('base_retry_delay', 1.0)
-    max_retry_delay = cache_config.get('max_retry_delay', 10.0)
+    # Make the API request
+    logger.info(f"Making async {api_name} API request to {url}")
 
-    while retries <= max_retries:
-        try:
-            if retries > 0:
-                # Calculate backoff delay with jitter
-                delay = min(base_retry_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_retry_delay)
-                logger.info(f"Retry {retries}/{max_retries} for {api_name} API request after {delay:.2f}s delay (async)")
-                await asyncio.sleep(delay)
+    # Use provided session or create a new one
+    close_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close_session = True
 
-            logger.info(f"Making async {api_name} API request to {url}" + (f" (retry {retries})" if retries > 0 else ""))
+    try:
+        async with session.get(url, params=params, timeout=10) as response:
+            if response.status == 200:
+                data = await response.json()
+                logger.info(f"Successful {api_name} API response (async)")
 
-            # Use aiohttp for async HTTP requests
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=10) as response:
-                    # Check for rate limiting or server errors that should trigger retries
-                    if response.status in [429, 500, 502, 503, 504]:
-                        retries += 1
-                        logger.warning(f"{api_name} API returned status code {response.status}, triggering retry (async)")
-                        continue
+                # Save to cache if caching is enabled
+                if cache_type and cache_config['enabled']:
+                    save_to_cache(cache_config['directory'], cache_key, data, cache_config['enabled'])
 
-                    if response.status == 200:
-                        data = await response.json()
-                        logger.info(f"Successful {api_name} API response (async)")
-
-                        # Save to cache if caching is enabled
-                        if cache_type and cache_config['enabled']:
-                            save_to_cache(cache_config['directory'], cache_key, data, cache_config['enabled'])
-
-                        return True, data
-                    else:
-                        error_msg = f"{api_name} API returned status code {response.status} (async)"
-                        logger.error(error_msg)
-                        return False, f"Error: {error_msg}"
-
-        except asyncio.TimeoutError:
-            retries += 1
-            if retries <= max_retries:
-                logger.warning(f"{api_name} API request timed out, retry {retries}/{max_retries} (async)")
-                continue
-            error_msg = f"{api_name} API request timed out after {max_retries} retries (async)"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except aiohttp.ClientConnectionError:
-            retries += 1
-            if retries <= max_retries:
-                logger.warning(f"Connection error when accessing {api_name} API, retry {retries}/{max_retries} (async)")
-                continue
-            error_msg = f"Connection error when accessing {api_name} API after {max_retries} retries (async)"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except json.JSONDecodeError:
-            error_msg = f"Invalid JSON response from {api_name} API (async)"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-        except Exception as e:
-            error_msg = f"Unexpected error in {api_name} API request: {str(e)} (async)"
-            logger.error(error_msg)
-            return False, f"Error: {error_msg}"
-
-    # Should only be reached if all retries were used up
-    error_msg = f"All {max_retries} retries failed for {api_name} API request (async)"
-    logger.error(error_msg)
-    return False, f"Error: {error_msg}"
+                return True, data
+            else:
+                # Return the response object for the decorator to handle status code retries
+                return False, response
+    finally:
+        # Close the session if created
+        if close_session:
+            await session.close()
