@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from typing import Any, Dict, Optional, Union, Type, cast
+from functools import lru_cache
 from dotenv import load_dotenv
 
 # Configure logger
@@ -101,6 +102,7 @@ class Config:
             except Exception as e:
                 logger.warning(f"Failed to create cache directory: {str(e)}")
 
+    @lru_cache(maxsize=32)
     def get(self, key: str, default: Optional[str] = None, value_type: str = "str",
             required: bool = False) -> Any:
         """
@@ -185,6 +187,19 @@ class Config:
         self._config_values[key] = converted_value
         return converted_value
 
+    @lru_cache(maxsize=32)
+    def get_api_key(self, service_name: str) -> str:
+        """
+        Get an API key for a specific service with caching optimisation.
+
+        Args:
+            service_name: Name of the service
+
+        Returns:
+            API key or empty string if not found
+        """
+        return self._api_keys.get(service_name, "")
+
     def set(self, key: str, value: Any) -> None:
         """
         Set a configuration value at runtime.
@@ -194,6 +209,8 @@ class Config:
             value: The value to set
         """
         self._config_values[key] = value
+        # Clear cache for this key to ensure the new value is used
+        self.get.cache_clear()
         logger.debug(f"Configuration '{key}' set at runtime")
 
     @property
@@ -211,11 +228,23 @@ class Config:
         """Get the default location for weather queries."""
         return self._config_values.get("DEFAULT_LOCATION", "Berlin")
 
+    @property
+    def is_caching_enabled(self) -> bool:
+        """Check if caching is enabled."""
+        return self._cache_config.get("enabled", False)
+
     def reload(self) -> None:
         """Reload configuration from environment and defaults."""
+        # Clear lru_cache to ensure fresh values
+        self.get.cache_clear()
+        self.get_api_key.cache_clear()
+
+        # Reset configuration
         self._config_values = {}
         self._cache_config = {}
         self._api_keys = {}
+
+        # Reload from environment
         load_dotenv(override=True)
         self._load_defaults()
         logger.info("Configuration reloaded")
